@@ -1,0 +1,1179 @@
+#!/usr/bin/env perl
+
+# Copyright (C) 2007-2008 Martin A. Hansen.
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+
+# http://www.gnu.org/copyleft/gpl.html
+
+use warnings;
+use strict;
+use Data::Dumper;
+use IO::File;
+
+$| = 1;
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> MAIN <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+my ( $NUM, $args );
+
+$NUM = '-?(?:[0-9,]+|[0-9,]+\.\d+|\.\d+)';   # global regex to match numbers, e.g. 34 0.34 .34 -23 -0.23 -.23 
+
+$args->{ "CALC_DIR" }     = $ENV{ "HOME" } . "/.calc";
+$args->{ "CONFIG_FILE" }  = $args->{ "CALC_DIR" } . "/config";
+$args->{ "HISTORY_FILE" } = $args->{ "CALC_DIR" } . "/history";
+$args->{ "STACK_FILE" }   = $args->{ "CALC_DIR" } . "/stack";
+$args->{ "CONST_FILE" }   = $args->{ "CALC_DIR" } . "/constants";
+
+mkdir $args->{ "CALC_DIR" } if not -d $args->{ "CALC_DIR" };
+
+
+$args = &config_read( $args );
+
+if ( not -t STDIN )
+{
+    print &help;
+
+    &stack_aux( $args );
+}
+elsif ( grep -f, @ARGV )
+{
+    print &help;
+
+    &stack_aux( $args, \@ARGV );
+
+    &prompt( $args );
+}
+elsif ( @ARGV )
+{
+    &recurse_calc( $args, [ split( /\s+/, shift @ARGV ) ] );
+}
+else
+{
+    print &help;
+
+    &prompt( $args );
+}
+
+exit;
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> SUBROUTINES <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+sub recurse_calc
+{
+    # Martin A. Hansen, January 2008.
+
+    # Calculate the result of a request without
+    # using the prompt.
+
+    my ( $args,   # argument hash
+         $list,   # request list
+         $val,    # result value
+       ) = @_;
+
+    # Returns nothing.
+
+    my ( $num, $op, $stack, $dec );
+
+    $op  = splice @{ $list }, scalar( @{ $list } ) / 2 + 0.5, 1;
+    $val = shift @{ $list } if not $val;
+    $num = shift @{ $list };
+
+    $stack = [ $val, $num ];
+
+    &stack_calc( $stack, $op );
+
+    $val = pop @{ $stack };
+
+    if ( scalar @{ $list } )
+    {
+        &recurse_calc( $args, $list, $val );
+    }
+    else
+    {
+        $dec = $args->{ "DECIMALS" };
+        $val = sprintf( "%.${dec}f", $val );
+        $val =~ s/(^[-+]?\d+?(?=(?>(?:\d{3})+)(?!\d))|\G\d{3}(?=\d))/$1,/g if $args->{ "COMMA" };
+        print "Calc: $val\n";
+    }
+}
+
+
+sub help
+{
+    # Martin A. Hansen, May 2007.
+
+    # Retuns help text
+
+    my $help = qq(
+Copyright (C) 2007-2008 Martin A. Hansen.
+
+Contact: mail\@maasha.dk
+
+Ver 1.4
+
+calc is a command line calculator using Reverse Polish Notation.
+
+Usage:      calc                    :  Start calc prompt.
+            calc <file>             :  Read numbers from a file into a stack.
+            calc < <numbers>        :  Read numbers from a pipe into a stack.
+                                    
+Operators:  +                       :  Add the last two stack elements.
+            -                       :  Substract the last two stack elements.
+            *                       :  Multiply the last two stack elements.
+            /                       :  Divide the last two stack elements.
+            %                       :  Modulus of the last two stack elements.
+            **|^|pow                :  Raise the second last stack element
+                                       to the power of the last stack element.
+                                    
+Functions:  sum                     :  Sum all stack elements.
+            sqrt                    :  Calculate the square root of the last
+                                       stack element.
+                                    
+Commands:   help|?                  :  Print this help menu.
+            quit|q|exit|e           :  Exit calc.
+            hist                    :  Print calc history.
+            clear                   :  Clear stack.
+            del <line no>           :  Delete stack line number.
+            !<line no>              :  Repeat stack line number.
+            .                       :  Repeat last command.
+            swap                    :  Swap the last two stack elements.
+            pop                     :  Pop one element from stack.
+            shift                   :  Shift one element from stack.
+            sort                    :  Sort stack elements.
+            uniq                    :  Sort stack elements uniquely.
+            reverse|rev             :  Reverse stack order.
+            undo                    :  Undo stack changes.
+            redo                    :  Redo stack changes.
+                                  
+Constants:  const                   :  Print constants.
+            const <const no>        :  Copy constant to stack.
+            const add <num> <desc>  :  Add a new constant with description.
+            const del <const no>    :  Delete constant.
+                                    
+Settings:   set                     :  Print settings.
+            set comma=<1|0>         :  Enable comma notation in numbers.
+            set dec=<int>           :  Number of decimals to use (rounded).
+            set hist=<int>          :  Number of lines to show with hist.
+                                    
+Files:      ~/.calc/config          :  Contains configurations.
+            ~/.calc/history         :  Contains complete command history.
+            ~/.calc/stack           :  Contains stacks from session to session.
+            ~/.calc/constants       :  Contains constants.
+
+);
+
+    return $help;
+}
+
+
+sub prompt
+{
+    # Martin A. Hansen, May 2007.
+
+    # Interactive prompt reading input from keybord and
+    # decides what to do based upon this input.
+
+    my ( $args,    # argument hash
+         $input,   # fake input element - OPTIONAL
+       ) = @_;
+
+    # returns nothing
+
+    my ( $stacks, $stack );
+
+    $stacks = &stack_read( $args );
+    $stack  = $stacks->[ $args->{ "ACTIVE_STACK" } ] || [];
+
+    if ( not $input )
+    {
+        &stack_print( $stack, $args );
+
+        print "calc> ";
+
+        open STDIN, "/dev/tty" or die $!;
+
+        $input = <STDIN>;
+
+        $input =~ s/,|\n|\r//g;
+
+        &prompt( $args, " " ) if not defined $input;
+    }
+
+    if ( $input =~ /^($NUM)$/ ) {                            # number
+        &stack_push( $stack, $1 );
+    } elsif ( $input =~ /help|\?/i ) {                       # help
+        print &help();
+    } elsif ( $input =~ /clear/i ) {                         # clear
+        $args->{ "CLEAR" } = 1;
+    } elsif ( $input =~ /^(del|delete)\s*(\d+)/i ) {         # delete
+        &stack_delete( $stack, $2 );
+    } elsif ( $input =~ /!\s*(\d+)/ ) {                      # repeat line
+        &stack_repeat( $stack, $1 );
+    } elsif ( $input =~ /^\.$/ ) {                           # repeat command
+        &command_repeat( $stack, $args );
+    } elsif ( $input =~ /pop/i ) {                           # pop
+        &stack_pop( $stack, $args );
+    } elsif ( $input =~ /shift/i ) {                         # shift
+        &stack_shift( $stack, $args );
+    } elsif ( $input =~ /swap/i ) {                          # swap
+        &stack_swap( $stack );
+    } elsif ( $input =~ /sqrt/i ) {                          # sqrt
+        &stack_sqrt( $stack );
+    } elsif ( $input =~ /sum/i ) {                           # sum
+        &stack_sum( $stack );
+    } elsif ( $input =~ /sort/i ) {                          # sort
+        &stack_sort( $stack );
+    } elsif ( $input =~ /unique|uniq/i ) {                   # uniq
+        &stack_uniq( $stack );
+    } elsif ( $input =~ /reverse|rev/i ) {                   # reverse
+        &stack_rev( $stack );
+    } elsif ( $input =~ /^(\+|-|\*|\/|%|\*\*|\^|pow)$/i ) {  # operators
+        &stack_calc( $stack, $1 );
+    } elsif ( $input =~ /^const(.*)/i ) {                    # constants
+        &const_args( $stack, $args, $1 );
+    } elsif ( $input =~ /^set(.*)/i ) {                      # set
+        &set_args( $args, $1 );
+    } elsif ( $input =~ /hist|history/i ) {                  # history
+        &hist_print( $args );
+    } elsif ( $input =~ /undo/i ) {                          # undo
+        $stack = &stack_undo( $args );
+    } elsif ( $input =~ /redo/i ) {                          # redo
+        $stack = &stack_redo( $args );
+    } elsif ( $input =~ /^(quit|q|exit|e)$/i ) {             # quit
+        exit;
+    }
+    
+    &stack_write( $stack, $args ) if not $input =~ /undo|redo/i;
+    &config_write( $args );
+    &hist_write( $input, $args ) if not $input =~ /^$/;
+
+    &prompt( $args );
+}
+
+
+sub config_read
+{
+    # Martin A. Hansen, May 2007.
+
+    # Reads arguments from config file.
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # returns hash
+
+    my ( $file, $line, @fields );
+
+    $file = $args->{ "CONFIG_FILE" };
+
+    if ( -f $file )
+    {
+        open IN, $file or die qq(ERROR: Could not read-open file "$file": $!\n);
+
+        while ( $line = <IN> )
+        {
+            chomp $line;
+
+            @fields = split "\t", $line;
+        
+            $args->{ $fields[ 0 ] } = $fields[ 1 ];
+        }
+
+        close IN;
+    }
+
+    $args->{ "DECIMALS" }     ||= 2;
+    $args->{ "HISTORY" }      ||= 100;
+    $args->{ "UNDO_HISTORY" } ||= 20;
+    $args->{ "ACTIVE_STACK" } ||= 0;
+    $args->{ "STACK_SIZE" }   ||= 0;
+
+    return wantarray ? %{ $args } : $args;
+}
+
+
+sub config_write
+{
+    # Martin A. Hansen, May 2007.
+    
+    # Writes configuration to file
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( $file );
+
+    $file = $args->{ "CONFIG_FILE" };
+
+    delete $args->{ "CLEAR" };
+
+    open OUT, ">$file" or die qq(ERROR: Could not write-open file "$file": $!\n);
+
+    map { print OUT "$_\t$args->{ $_ }\n" } keys %{ $args };
+
+    close OUT;
+}
+
+
+sub hist_read
+{
+    # Martin A. Hansen, May 2007.
+
+    # Reads the entire command history
+    # from file.
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # returns list
+
+    my ( $file, $line, @hist );
+
+    $file = $args->{ "HISTORY_FILE" };
+
+    @hist = ();
+
+    open IN, $file or die qq(ERROR: Could not read-open file "$file": $!\n);
+
+    while ( $line = <IN> )
+    {
+        chomp $line;
+
+        push @hist, $line;
+    }
+
+    close IN;
+
+    return wantarray ? @hist : \@hist;
+}
+
+
+sub hist_write
+{
+    # Martin A. Hansen, May 2007.
+
+    # Appends an event to the history file
+
+    my ( $input,   # event to write in history
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( $file );
+
+    $file = $args->{ "HISTORY_FILE" };
+
+    open OUT, ">>$file" or die qq(ERROR: Could not append-open file "$file": $!\n);
+
+    print OUT "$input\n";
+
+    close OUT;
+}
+
+
+sub hist_print
+{
+    # Martin A. Hansen, May 2007.
+
+    # prints a number of hist lines based
+    # upon the settings in the config file.
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( @hist, $lines );
+
+    @hist = &hist_read( $args );
+
+    $lines = $args->{ "HISTORY" };
+
+    if ( @hist > $lines ) {
+        @hist = @hist[ $lines * -1 .. -1 ];
+    }
+
+    print "hist: $_\n" foreach @hist;
+}
+
+
+sub stack_read
+{
+    # Martin A. Hansen, May 2007.
+
+    # Reads saved stacks from the stack file
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # Returns AoA
+
+    my ( $file, $data, $stacks );
+
+    $file = $args->{ "STACK_FILE" };
+
+    if ( -f $file )
+    {
+        $/ = undef;
+
+        open IN, $file or die qq(ERROR: Could not read-open file "$file": $!\n);
+
+        $data = <IN>;
+
+        close IN;
+
+        $/ = "\n";
+
+        $stacks = eval $data or die qq(ERROR: Could not eval stacks: $@\n);
+    }
+
+    $stacks ||= [];
+
+    return wantarray ? @{ $stacks } : $stacks;
+}
+
+
+sub stack_write
+{
+    # Martin A. Hansen, May 2007.
+
+    # Writes stacks to stack file
+
+    my ( $stack,   # list of numbers
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( $file, @stacks );
+
+    if ( defined $stack->[ 0 ] or $args->{ "CLEAR" } )
+    {
+        $Data::Dumper::Terse = 1;
+
+        $file = $args->{ "STACK_FILE" };
+
+        @stacks = &stack_read( $args );
+
+        $stack = [] and delete $args->{ "CLEAR" } if $args->{ "CLEAR" };
+
+        push  @stacks, $stack;
+        shift @stacks if @stacks > $args->{ "UNDO_HISTORY" };
+
+        $args->{ "STACK_SIZE" }   = scalar @stacks - 1;
+        $args->{ "ACTIVE_STACK" } = scalar @stacks - 1;
+
+        open OUT, ">$file" or die qq(ERROR: Could not write-open file "$file": $!\n);
+
+        print OUT Dumper( \@stacks );
+
+        close OUT;
+    }
+}
+
+
+sub stack_print
+{
+    # Martin A. Hansen, May 2007.
+
+    # prints the active stack
+
+    my ( $stack,   # list of numbers
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( @stack, $i, $max, $max_cif, $cif, $input, $num, $dec, $num_part );
+
+    @stack = @{ $stack };
+
+    $max = length( scalar @stack - 1 );
+    $dec = $args->{ "DECIMALS" };
+
+    map { s/(^[-+]?\d+?(?=(?>(?:\d{3})+)(?!\d))|\G\d{3}(?=\d))/$1,/g; } @stack if $args->{ "COMMA" };
+
+    $max_cif = 0;
+
+    for ( $i = 0; $i < @stack; $i++ )
+    {
+        if ( $stack[ $i ] =~ /^($NUM)/ ) {
+            $max_cif = length $1 if length $1 > $max_cif;
+        }
+    }
+
+    for ( $i = 0; $i < @stack; $i++ )
+    {
+        $num = $stack[ $i ];
+
+        if ( $num =~ /^($NUM)/ ) {
+            $cif = length $1;
+        }
+
+        if ( $num =~ /,..([^,]+)$/ )
+        {
+            $num_part = $1;
+            $num_part = sprintf( "%.${dec}f", $num_part );
+
+            $num =~ s/,(..)[^,]+$/,$1$num_part/;
+        }
+        else
+        {
+            $num = sprintf( "%.${dec}f", $num );
+        }
+
+        print " " x ( $max - length $i ) . "$i:  ";
+        print " " x ( $max_cif - $cif )  . "$num\n";
+    }
+}
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> OPERATIONS <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+sub stack_push
+{
+    # Martin A. Hansen, May 2007.
+
+    # push a number onto a stack
+
+    my ( $stack,   # list of numbers
+         $num,     # number
+       ) = @_;
+
+    # returns nothing
+
+    $num =~ s/^0+/0/;
+    $num =~ s/^\./0\./;
+    $num =~ s/^-\./-0\./;
+
+    push @{ $stack }, $num;
+}
+
+
+sub stack_pop
+{
+    # Martin A. Hansen, May 2007.
+
+    # pops one line from a stack
+
+    my ( $stack,   # list of numbers
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    pop @{ $stack };
+
+    $args->{ "CLEAR" } = 1 if @{ $stack } == 0;
+}
+
+
+sub stack_shift
+{
+    # Martin A. Hansen, May 2007.
+
+    # shifts one line from a stack
+
+    my ( $stack,   # list of numbers
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    shift @{ $stack };
+
+    $args->{ "CLEAR" } = 1 if @{ $stack } == 0;
+}
+
+
+sub stack_sort
+{
+    # Martin A. Hansen, May 2007.
+
+    # sorts stack in ascending order.
+
+    my ( $stack,   # list of numbers
+       ) = @_;
+
+    # returns nothing
+
+    @{ $stack } = sort { $a <=> $b } @{ $stack };
+}
+
+
+sub stack_uniq
+{
+    # Martin A. Hansen, May 2007.
+
+    # sorts stack uniquely
+
+    my ( $stack,   # list of numbers
+       ) = @_;
+
+    # returns nothing
+
+    my ( $num, %hash );
+
+    map { $hash{ $_ } = 1 } @{ $stack };
+
+    @{ $stack } = keys %hash;
+
+    &stack_sort( $stack );
+}
+
+
+sub stack_rev
+{
+    # Martin A. Hansen, May 2007.
+
+    # reverses stack order
+
+    my ( $stack,   # list of numbers
+       ) = @_;
+
+    # returns nothing
+
+    @{ $stack } = reverse @{ $stack };
+}
+
+
+sub stack_delete
+{
+    # Martin A. Hansen, May 2007.
+
+    # deletes one line from a stack
+    # given a line number
+
+    my ( $stack,    # list of numbers
+         $lineno,   # line number
+       ) = @_;
+
+    # returns nothing
+
+    if ( $lineno <= @{ $stack } ) {
+        splice @{ $stack }, $lineno, 1;
+    }
+
+    $args->{ "CLEAR" } = 1 if @{ $stack } == 0;
+}
+
+
+sub stack_repeat
+{
+    # Martin A. Hansen, May 2007.
+
+    # adds a copy of stack element identified
+    # by a given line number.
+
+    my ( $stack,    # list of numbers
+         $lineno,   # line number
+       ) = @_;
+
+    # returns nothing
+
+    if ( $lineno <= @{ $stack } ) {
+        push @{ $stack }, $stack->[ $lineno ];
+    }
+}
+
+
+sub stack_swap
+{
+    # Martin A. Hansen, May 2007.
+
+    # swaps the last two elements of a stack
+
+    my ( $stack,   # list of numbers
+       ) = @_;
+
+    # returns nothing
+
+    my ( $val1, $val2 );
+
+    if ( @{ $stack } >= 2 )
+    {
+        $val2 = pop @{ $stack };
+        $val1 = pop @{ $stack };
+        
+        push @{ $stack }, $val2;
+        push @{ $stack }, $val1;
+    }
+}
+
+
+sub stack_sqrt
+{
+    # Martin A. Hansen, May 2007.
+
+    # takes the squary root of the last stack element.
+
+    my ( $stack,   # list of numbers
+       ) = @_;
+
+    # returns nothing
+
+    if ( @{ $stack } > 0 )
+    {
+        if ( $stack->[ -1 ] > 0 )
+        {
+            $stack->[ -1 ] = sqrt $stack->[ -1 ];
+        }
+        else
+        {
+            print "ERROR: Value for sqrt must be larger than 0.\n";
+
+            $stack = [];
+        }
+    }
+}
+
+
+sub stack_sum
+{
+    # Martin A. Hansen, May 2007.
+
+    # calculates the total sum of all stack elements,
+    # and replaces the stack with this sum.
+
+    my ( $stack,   # list of numbers
+       ) = @_;
+
+    # returns nothing
+
+    my ( $sum );
+
+    map { $sum += shift @{ $stack } } @{ $stack };
+
+    push @{ $stack }, $sum;
+}
+
+
+sub stack_calc
+{
+    # Martin A. Hansen, May 2007.
+
+    # calculates result of an operation between
+    # the last two stack elements, which are substituted
+    # with this result.
+
+    my ( $stack,   # list of numbers
+         $op,      # operator
+       ) = @_;
+
+    # returns nothing
+
+    my ( $val1, $val2, $exp, $result );
+
+    if ( @{ $stack } >= 2 )
+    {
+        $val2 = pop @{ $stack };
+        $val1 = pop @{ $stack };
+
+        $op =~ s/\^|pow/**/;
+
+        if ( $op eq '/' and $val2 == 0 )
+        {
+            print "ERROR: Illigal division by zero\n";
+
+            push @{ $stack }, $val1, $val2;
+        }
+        else
+        {
+            $exp = "$val1 $op $val2";
+
+            $result = eval $exp;
+            
+            die qq(ERROR: Could not eval expression "$exp": $@\n) if $@;
+
+            push @{ $stack }, $result;
+        }
+    }
+}
+
+
+sub command_repeat
+{
+    # Martin A. Hansen, May 2007.
+
+    my ( $stack,   # list of numbers
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( @hist, $input );
+
+    @hist  = &hist_read( $args );
+
+    $input = $hist[ -1 ];
+
+    &prompt( $args, $input );
+}
+
+
+sub const_args
+{
+    # Martin A. Hansen, May 2007.
+    
+    # Handles constants
+
+    my ( $stack,     # list of numbers
+         $args,      # argument hash
+         $setting,   # setting string
+       ) = @_;
+
+    # returns nothing
+
+    my ( $const, $num, $desc, $no );
+
+    $const = &const_read( $args );
+
+    if ( not $setting )
+    {
+        &const_print( $const, $args );
+    }
+    elsif ( $setting =~ /^\s*(\d+)$/ )
+    {
+        push @{ $stack }, $const->[ $1 ]->[ 0 ];
+    }
+    elsif ( $setting =~ /add\s+($NUM)\s+(.*)$/ )
+    {
+        $num   = $1;
+        $desc  = $2;
+
+        push @{ $const }, [ $num, $desc ];
+
+        &const_write( $args, $const );
+        &const_print( $const, $args );
+    }
+    elsif ( $setting =~ /del\s+(\d+)$/ )
+    {
+        $no = $1;
+
+        if ( $no <= @{ $const } )
+        {
+            splice @{ $const }, $no, 1;
+
+            &const_write( $args, $const );
+        }
+
+        &const_print( $const, $args );
+    }
+    else
+    {
+        print "ERROR: Bad const syntax ->$setting<-\n";
+    }
+}
+
+
+sub const_print
+{
+    # Martin A. Hansen, June 2007.
+
+    # Prints constants
+    
+    my ( $const,   # list of constant tuples
+         $args,    # argument hash
+       ) = @_;
+
+    # returns nothing
+
+    my ( @const, $max, $dec, $max_cif, $i, $num, $cif, $num_part );
+
+    @const = @{ $const };
+
+    $max = length( scalar @const - 1 );
+    $dec = $args->{ "DECIMALS" };
+
+    map { $_->[ 0 ] =~ s/(^[-+]?\d+?(?=(?>(?:\d{3})+)(?!\d))|\G\d{3}(?=\d))/$1,/g; } @const if $args->{ "COMMA" };
+
+    $max_cif = 0;
+
+    for ( $i = 0; $i < @const; $i++ )
+    {
+        if ( $const[ $i ]->[ 0 ] =~ /^($NUM)/ ) {
+            $max_cif = length $1 if length $1 > $max_cif;
+        }
+    }
+
+    for ( $i = 0; $i < @const; $i++ )
+    {
+        $num = $const[ $i ]->[ 0 ];
+
+        if ( $num =~ /^($NUM)/ ) {
+            $cif = length $1;
+        }
+
+        if ( $num =~ /,..([^,]+)$/ )
+        {
+            $num_part = $1;
+            $num_part = sprintf( "%.${dec}f", $num_part );
+
+            $num =~ s/,(..)[^,]+$/,$1$num_part/;
+        }
+        else
+        {
+            $num = sprintf( "%.${dec}f", $num );
+        }
+
+        print "const " . " " x ( $max - length $i ) . "$i:  ";
+        print " " x ( $max_cif - $cif )  . "$num";
+        print "   # $const[ $i ]->[ 1 ]\n";
+    }
+}
+
+
+sub const_read
+{
+    # Martin A. Hansen, June 2007.
+
+    # Reads a list of const from constants file.
+    # If file is not found returns a set of buildin
+    # constants.
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # Returns AoA.
+
+    my ( $const, $line );
+
+    if ( -f $args->{ "CONST_FILE" } )
+    {
+        open IN, $args->{ "CONST_FILE" } or die qq(ERROR: could not read-open file "$args->{ 'CONST_FILE' }": $!\n);
+        
+        while ( $line = <IN> )
+        {
+            chomp $line;
+
+            if ( $line =~ /^($NUM)\s+(.*)/ ) {
+                push @{ $const }, [ $1, $2 ];
+            }
+        }
+
+        close IN;
+    }
+    else
+    {
+        $const = [
+            [ 42 , "Answer to Life, Universe, and Everything." ],
+            [ 3.14159265358979323846264338327950288419716939937510, "pi" ],
+        ];
+    }
+
+    return wantarray ? @{ $const } : $const;
+}
+
+
+sub const_write
+{
+    # Martin A. Hansen, June 2007.
+
+    # Writes constants to file.
+
+    my ( $args,    # argument hash
+         $const,   # AoA with constants and descriptions
+       ) = @_;
+
+    # returns nothing.
+
+    open OUT, ">$args->{ 'CONST_FILE' }" or die qq(ERROR: could not write-open file "$args->{ 'CONST_FILE' }": $!\n);
+
+    map { print OUT join( "\t", @{ $_ } ), "\n" } @{ $const };
+
+    close OUT;
+}
+
+
+sub set_args
+{
+    # Martin A. Hansen, May 2007.
+    
+    # Handles settings
+
+    my ( $args,      # argument hash
+         $setting,   # setting string
+       ) = @_;
+
+    # returns nothing
+
+    my ( $key, $val );
+
+    if ( not $setting )
+    {
+        map { print "$_=$args->{ $_ }\n" } keys %{ $args };
+    }
+    elsif ( $setting =~ /\s*(\w+)\s*=\s*(.+)/ )
+    {
+        $key = $1;
+        $val = $2;
+
+        if ( $key =~ /^dec|decimal|decimals$/i )
+        {
+            if ( $val =~ /^\d+$/ ) {
+                $args->{ "DECIMALS" } = $val;
+            } else {
+                print qq(ERROR: value for "$key" must be positive integer - not "$val"\n);
+            }
+        }
+        elsif ( $key =~ /^hist|history$/i )
+        {
+            if ( $val =~ /^\d+$/ ) {
+                $args->{ "HISTORY" } = $val;
+            } else {
+                print qq(ERROR: value for "$key" must be positive integer - not "$val"\n);
+            }
+        }
+        elsif ( $key =~ /^comma/i )
+        {
+            if ( $val =~ /^(1|0)$/ ) {
+                $args->{ "COMMA" } = $val;
+            } else {
+                print qq(ERROR: value for "$key" must be 1 or 0 - not "$val"\n);
+            }
+        }
+    }
+    else
+    {
+        print "ERROR: Bad setting syntax ->$setting<-\n";
+    }
+}
+
+
+sub stack_undo
+{
+    # Martin A. Hansen, May 2007.
+
+    # Undo history is based upon keeping a list of
+    # previous stacks. The undo command set a index
+    # to the previous stack, which is returned.
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # returns a list
+
+    my ( $stacks, $stack );
+
+    if ( $args->{ "ACTIVE_STACK" } > 0 )
+    {
+        $stacks = &stack_read( $args );
+
+        $args->{ "ACTIVE_STACK" }--;
+
+        $stack = $stacks->[ $args->{ "ACTIVE_STACK" } ];
+    }
+    else
+    {
+        print "ERROR: End of undo history - cannot undo\n";
+
+        $stack = [];
+    }
+
+    return wantarray ? @{ $stack } : $stack;
+}
+
+
+sub stack_redo
+{
+    # Martin A. Hansen, May 2007.
+
+    # Undo history is based upon keeping a list of
+    # previous stacks. The redo command set a index
+    # to the next stack, which is returned.
+
+    my ( $args,   # argument hash
+       ) = @_;
+
+    # returns list
+
+    my ( $stacks, $stack );
+
+    if ( $args->{ "ACTIVE_STACK" } < $args->{ "STACK_SIZE" } )
+    {
+        $stacks = &stack_read( $args );
+
+        $args->{ "ACTIVE_STACK" }++;
+
+        $stack = $stacks->[ $args->{ "ACTIVE_STACK" } ];
+    }
+    else
+    {
+        print "ERROR: End of redo history - cannot redo\n";
+
+        $stack = [];
+    }
+
+    return wantarray ? @{ $stack } : $stack;
+}
+
+
+sub stack_aux
+{
+    # Martin A. Hansen, May 2007
+
+    # Reads numbers from pipe or file and generats a new stack.
+
+    my ( $args,   # argument hash
+         $argv,   # ARGV list
+       ) = @_;
+
+    # returns nothing
+
+    my ( $file, $fh, $line, @stack );
+
+    if ( $argv )
+    {
+        $file = shift @{ $argv };
+
+        $fh = new IO::File $file, "r" or die qq(ERROR: could not read-open file "$file": $!\n);
+    }
+    else
+    {
+        $fh = new IO::File "-" or die qq(ERROR: could not open pipe: $!\n);
+    }
+
+    while ( $line = <$fh> )
+    {
+        $line =~ s/,|\n|\r//g;
+
+        if ( $line =~ /^$NUM$/ ) {
+            push @stack, $line;
+        } elsif ( $line =~ /^$/ ) {
+            next;
+        } else {
+            die qq(ERROR: not a number: "$line"\n);
+        }        
+    }
+
+    close $fh;
+
+    &stack_write( \@stack, $args );
+}
+
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+
+__END__
