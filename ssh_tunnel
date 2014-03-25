@@ -1,0 +1,88 @@
+#!/bin/bash
+
+# Martin A. Hansen, mail@maasha.dk, 2014.
+# Script for setting up/tearing down a reverse SSH tunnel.
+# See http://www.howtoforge.com/reverse-ssh-tunneling
+# and http://www.thegeekstuff.com/2013/11/reverse-ssh-tunnel.
+
+REMOTE_USER="test"
+REMOTE_PORT=22
+REMOTE_HOST="85.82.195.151"
+REMOTE_USER_HOST="$REMOTE_USER@$REMOTE_HOST"
+
+REVERSE_BIND=10002
+REVERSE_HOST="localhost"
+REVERSE_PORT=22
+REVERSE_BIND_HOST_PORT="$REVERSE_BIND:$REVERSE_HOST:$REVERSE_PORT"
+
+SSH_OPTIONS="ServerAliveInterval=50"
+LOG_FILE="$HOME/.tunnel_log"
+CONTROL_PATH="$HOME/.tunnel_socket"
+
+print_usage() {
+    echo "Usage: $0 <start|stop>" 1>&2
+}
+
+# Append a given message to the log file defined in $LOG_FILE.
+log() {
+    local msg=$1
+
+    echo -e "`date`\t$msg" >> $LOG_FILE
+}
+
+# Find and return the PID for an SSH tunnel.
+ssh_tunnel_pid() {
+    local pid=$(ssh -S $CONTROL_PATH -O check $REMOTE_USER_HOST 2>&1 | sed "s/[^0-9]//g")
+
+    log "Obtaining PID: $pid"
+    
+    echo $pid
+}
+
+# Start a new SSH tunnel.
+ssh_tunnel_start() {
+    cmd="ssh -MS $CONTROL_PATH -fNngo $SSH_OPTIONS -R $REVERSE_BIND_HOST_PORT $REMOTE_USER_HOST"
+    msg="Starting ssh tunnel: $cmd"
+    echo "$msg" 1>&2
+    $cmd
+    log "$msg"
+}
+
+# Exit an SSH tunnel.
+ssh_tunnel_exit() {
+    cmd="ssh -S $CONTROL_PATH -O exit $REMOTE_USER_HOST"
+    msg="Exiting ssh tunnel: $cmd"
+    echo "$msg" 1>&2
+    $cmd
+    log "$msg"
+}
+
+if [ $# -ne 1 ]; then
+    print_usage
+
+    exit 1
+fi
+
+COMMAND=$1
+
+if [ "$COMMAND" == "start" ]; then
+    pid=$(ssh_tunnel_pid)
+
+    if [ "$pid" ]; then
+        echo "SSH tunnel already exists with PID: $pid" 1>&2
+    else
+        ssh_tunnel_start
+    fi
+elif [ "$COMMAND" == "stop" ]; then
+    if [ -e "$CONTROL_PATH" ]; then
+        ssh_tunnel_exit
+    else
+        echo "No SSH tunnel running" 1>&2
+    fi
+else
+    print_usage
+
+    exit 2
+fi
+
+exit 0
