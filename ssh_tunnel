@@ -69,7 +69,9 @@ if [ "$COMMAND" == "start" ]; then
     pid=$(ssh_tunnel_pid)
 
     if [ "$pid" ]; then
-        echo "SSH tunnel already exists with PID: $pid" 1>&2
+        msg="SSH tunnel already exists with PID: $pid"
+        echo "$msg" 1>&2
+        log "$msg"
     else
         ssh_tunnel_start
     fi
@@ -77,7 +79,9 @@ elif [ "$COMMAND" == "stop" ]; then
     if [ -e "$CONTROL_PATH" ]; then
         ssh_tunnel_exit
     else
-        echo "No SSH tunnel running" 1>&2
+        msg="No SSH tunnel running"
+        echo "$msg" 1>&2
+        log "$msg"
     fi
 else
     print_usage
