@@ -34,8 +34,6 @@ log() {
 ssh_tunnel_pid() {
     local pid=$(ssh -S $CONTROL_PATH -O check $REMOTE_USER_HOST 2>&1 | sed "s/[^0-9]//g")
 
-    log "Obtaining PID: $pid"
-    
     echo $pid
 }
 
