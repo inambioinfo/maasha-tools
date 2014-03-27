@@ -7,14 +7,19 @@ CPUS  = 2
 
 module Enumerable
   # Fork each (feach) creates a fork pool with a specified number of processes
-  # (_procs_) to iterate over the Enumerable object processing the specified
-  # block. Calling feach with 0 _procs_ disables forking for debugging purposes.
+  # to iterate over the Enumerable object processing the specified  block.
+  # Calling feach with :processes => 0 disables forking for debugging purposes.
+  # It is possible to disable synchronized output with :synchronize => false
+  # which will save some overhead.
   #
   # @example - process 10 elements using 4 processes:
   #
-  # (0 ... 10).feach(4) { |i| puts i; sleep 1 }
-  def feach(procs, &block)
+  # (0 ... 10).feach(:processes => 4) { |i| puts i; sleep 1 }
+  def feach(options = {}, &block)
     $stderr.puts "Parent pid: #{Process.pid}" if DEBUG
+
+    procs = options[:processes]   || 0
+    sync  = options[:synchronize] || true
 
     if procs > 0
       workers = spawn_workers(procs, &block)
@@ -26,6 +31,11 @@ module Enumerable
         threads << Thread.new do 
           worker = workers[index % procs]
           worker.process(elem)
+        end
+
+        if threads.size == procs
+          threads.each { |thread| thread.join }
+          threads = []
         end
       end
 
@@ -55,6 +65,9 @@ module Enumerable
           child_write.close
         end
       end
+
+      child_read.close
+      child_write.close
 
       $stderr.puts "Spawning worker with pid: #{pid}" if DEBUG
 
@@ -90,13 +103,13 @@ module Enumerable
 
     def terminate
       $stderr.puts "Terminating worker with pid: #{@pid}" if DEBUG
+      Process.wait(@pid, Process::WNOHANG)
       @parent_read.close
       @parent_write.close
-      Process.wait(@pid, Process::WNOHANG)
     end
   end
 end
 
 def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
 
-(0 ... 20).feach(CPUS) { |i| puts "#{i}: #{fib(Random.rand(20..35))}" }
+(0 ... 10).feach(processes: CPUS) { |i| puts "#{i}: #{fib(35)}" }
