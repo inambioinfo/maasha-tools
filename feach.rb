@@ -29,7 +29,7 @@ module Enumerable
         $stderr.puts "elem: #{elem}    index: #{index}" if FEACH_DEBUG
 
         threads << Thread.new do 
-          i = index % procs
+          i        = index % procs
           worker   = workers[i]
           cache[i] = worker.process(elem)
         end
@@ -50,6 +50,8 @@ module Enumerable
         block.call(elem)
       end
     end
+
+    self
   end
 
   def spawn_workers(procs, &block)
@@ -116,4 +118,4 @@ end
 
 def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
 
-(0 ... 10).feach(processes: 1) { |i| "#{i}: #{fib(35)}" }
+(0 ... 10).feach(processes: 2) { |i| "#{i}: #{fib(35)}" }
