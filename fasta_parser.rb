@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'pp'
-require_relative 'forkpool'
+require_relative 'feach'
 
 CPUS       = 2
 CHUNK_SIZE = 1024 * 20_000   # 20 Mb chunks
