@@ -1,24 +1,21 @@
 #!/usr/bin/env ruby
 
-require 'pp'
-
-FEACH_DEBUG = false
-
 module Enumerable
-  # Fork each (feach) creates a fork pool with a specified number of processes
-  # to iterate over the Enumerable object processing the specified  block.
-  # Calling feach with :processes => 0 disables forking for debugging purposes.
-  # It is possible to disable synchronized output with :synchronize => false
-  # which will save some overhead.
+  FEACH_DEBUG = false
+
+  # Iterates over an enumerable in parallel given a number of processes and a
+  # block to call. The parallel iteration is done by a pool of workers created
+  # using fork. An enumerator with synchronized output is returned and can be
+  # iterated over. Calling parallel with :processes => 0 disables forking for
+  # debugging purposes.
   #
   # @example - process 10 elements using 4 processes:
   #
-  # (0 ... 10).feach(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
-  def feach(options = {}, &block)
+  # (0 ... 10).parallel(processes: 4) { |i| sleep 3; i }.each { |e| puts e }
+  def parallel(options = {}, &block)
     $stderr.puts "Parent pid: #{Process.pid}" if FEACH_DEBUG
 
-    procs = options[:processes]   || 0
-    sync  = options[:synchronize] || true
+    procs = options[:processes] || 0
 
     Enumerator.new do |yielder|
       if procs > 0
@@ -46,7 +43,7 @@ module Enumerable
         workers.each { |worker| worker.terminate }
       else
         self.each do |elem|
-          block.call(elem)
+          yielder << block.call(elem)
         end
       end
     end
@@ -114,6 +111,7 @@ module Enumerable
   end
 end
 
-def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
+#def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
+#(0 ... 10).parallel(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
 
-(0 ... 10).feach(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
+(0 ... 10).parallel(processes: 4) { |i| sleep 3; i }.each { |e| puts e }
