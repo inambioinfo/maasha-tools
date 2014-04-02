@@ -80,10 +80,26 @@ module Enumerable
 
   def call(child_read, child_write, &block)
     while not child_read.eof?
-      elem = Marshal.load(child_read)
+      elem = IPC.load(child_read)
       $stderr.puts "      call with Process.pid: #{Process.pid}" if FEACH_DEBUG
       result = block.call(elem)
-      Marshal.dump(result, child_write)
+      IPC.dump(result, child_write)
+    end
+  end
+
+  class IPC
+    def self.load(io)
+      size       = io.read(4)
+      raise EOFError unless size
+      size       = size.unpack("I").first
+      marshalled = io.read(size)
+      Marshal.load(marshalled)
+    end
+
+    def self.dump(obj, io)
+      marshalled = Marshal.dump(obj)
+      io.write([marshalled.size].pack("I"))
+      io.write(marshalled)
     end
   end
 
@@ -97,9 +113,9 @@ module Enumerable
     end
 
     def process(elem)
-      Marshal.dump(elem, @parent_write)
+      IPC.dump(elem, @parent_write)
       $stderr.puts "   process with worker pid: #{@pid} and parent pid: #{Process.pid}" if FEACH_DEBUG
-      Marshal.load(@parent_read)
+      IPC.load(@parent_read)
     end
 
     def terminate
