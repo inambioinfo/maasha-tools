@@ -13,45 +13,43 @@ module Enumerable
   #
   # @example - process 10 elements using 4 processes:
   #
-  # (0 ... 10).feach(:processes => 4) { |i| puts i; sleep 1 }
+  # (0 ... 10).feach(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
   def feach(options = {}, &block)
     $stderr.puts "Parent pid: #{Process.pid}" if FEACH_DEBUG
 
     procs = options[:processes]   || 0
     sync  = options[:synchronize] || true
 
-    if procs > 0
-      workers = spawn_workers(procs, &block)
-      threads = []
-      cache   = []
+    Enumerator.new do |yielder|
+      if procs > 0
+        workers = spawn_workers(procs, &block)
+        threads = []
+        cache   = []
 
-      self.each_with_index do |elem, index|
-        $stderr.puts "elem: #{elem}    index: #{index}" if FEACH_DEBUG
+        self.each_with_index do |elem, index|
+          threads << Thread.new do
+            $stderr.puts "elem: #{elem}    index: #{index}" if FEACH_DEBUG
+            i        = index % procs
+            cache[i] = workers[i].process(elem)
+          end
 
-        threads << Thread.new do 
-          i        = index % procs
-          worker   = workers[i]
-          cache[i] = worker.process(elem)
+          if threads.size == procs
+            threads.each { |thread| thread.join }
+            cache.each { |result| yielder << result }
+            threads = []
+            cache   = []
+          end
         end
 
-        if threads.size == procs
-          threads.each { |thread| thread.join }
-          cache.each { |result| puts result }
-          threads = []
-          cache   = []
+        threads.each { |thread| thread.join }
+        cache.each   { |result| yielder << result }
+        workers.each { |worker| worker.terminate }
+      else
+        self.each do |elem|
+          block.call(elem)
         end
-      end
-
-      threads.each { |thread| thread.join }
-      cache.each { |result| puts result }
-      workers.each { |worker| worker.terminate }
-    else
-      self.each do |elem|
-        block.call(elem)
       end
     end
-
-    self
   end
 
   def spawn_workers(procs, &block)
@@ -118,4 +116,4 @@ end
 
 def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
 
-(0 ... 10).feach(processes: 2) { |i| "#{i}: #{fib(35)}" }
+(0 ... 10).feach(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
