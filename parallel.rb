@@ -49,6 +49,12 @@ module Enumerable
     end
   end
 
+  private
+
+  # Creates a given number (_procs_) of Worker objects which are returned in an
+  # array. The workers are created using fork, and each worker has a call
+  # method to process the given _block_ as well as two pipes for communicate
+  # between the worker and the parent process and visa versa.
   def spawn_workers(procs, &block)
     workers = []
 
@@ -78,6 +84,10 @@ module Enumerable
     workers
   end
 
+  # Method that is called in worker processes (forked childs) and which reads
+  # elements (_elem_) from one Inter Process Communcation (IPC) IO pipe and 
+  # calls the given _block_ with the _elem_ as argument. The result is written
+  # to another IPC pipe.
   def call(child_read, child_write, &block)
     while not child_read.eof?
       elem = IPC.load(child_read)
@@ -87,7 +97,10 @@ module Enumerable
     end
   end
 
+  # Class for Inter Process Communication (IPC) between forked processes. IPC
+  # is achieved by reading and writing Marshalled objects to IO.pipes.
   class IPC
+    # Read, unmarshal and return an object from a given IO (_io_).
     def self.load(io)
       size       = io.read(4)
       raise EOFError unless size
@@ -96,28 +109,40 @@ module Enumerable
       Marshal.load(marshalled)
     end
 
+    # Marshal a given object (_obj_) and write to a given IO (_io_).
     def self.dump(obj, io)
       marshalled = Marshal.dump(obj)
       io.write([marshalled.size].pack("I"))
       io.write(marshalled)
+
+      nil  # Save GC
     end
   end
 
+  # Worker object that can be used to access the underlying child process by
+  # writing and reading to the Inter Communication Process IO pipes.
   class Worker
     attr_reader :parent_read, :parent_write, :pid
 
+    # Instantiates a Worker object given two IPC pipes _parent_read_ and 
+    # _parent_write as well as the process id (_pid_).
     def initialize(parent_read, parent_write, pid)
       @parent_read  = parent_read
       @parent_write = parent_write
       @pid          = pid
     end
 
+    # Method to be called from the parent process to delegate work on the given
+    # element (_elem_) to the child process of this Worker object and return the
+    # result through IPC.
     def process(elem)
       IPC.dump(elem, @parent_write)
       $stderr.puts "   process with worker pid: #{@pid} and parent pid: #{Process.pid}" if FEACH_DEBUG
       IPC.load(@parent_read)
     end
 
+    # Terminate Worker object by waiting for the child process to exit and
+    # close IPC IO streams.
     def terminate
       $stderr.puts "Terminating worker with pid: #{@pid}" if FEACH_DEBUG
       Process.wait(@pid, Process::WNOHANG)
