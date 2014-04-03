@@ -152,7 +152,6 @@ module Enumerable
   end
 end
 
-#def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
-#(0 ... 10).parallel(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
+def fib(n) n < 2 ? n : fib(n-1)+fib(n-2); end # Lousy Fibonacci calculator <- heavy job
 
-(0 ... 10).parallel(processes: 4) { |i| sleep 3; i }.each { |e| puts e }
+(0 ... 10).parallel(processes: 4) { |i| "#{i}: #{fib(33)}" }.each { |e| puts e }
