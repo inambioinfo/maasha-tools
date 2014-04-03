@@ -1,10 +1,10 @@
 #!/usr/bin/env ruby
 
+require 'benchmark'
 require 'pp'
-require_relative 'feach'
-
-CPUS       = 2
-CHUNK_SIZE = 1024 * 20_000   # 20 Mb chunks
+require 'tempfile'
+require 'parallel'
+require_relative 'parallel'
 
 class IO
   # Method that reads the next "chunk" of data from the I/O stream.
@@ -66,12 +66,35 @@ class Seq
 end
 
 class Fasta < File
-  def each
-    enum = each_chunk(CHUNK_SIZE, '>')
-    enum.feach(processes: 3) { |chunk| parse(chunk) { |entry| yield entry } }
+  # Using parallel gem
+  # ~ 6.2 seconds
+  # Parallel.each(cache, in_processes: CPUS) { parse(c) { |entry| yield entry } }  <- NOT SYNCHRONIZED
+  # On order to synchronize output we have to use #map as below.
+  def each_parallel
+    cache = []
+
+    while chunk = get_chunk(CHUNK_SIZE, '>')
+      cache << chunk
+
+      if cache.size == CPUS
+        Parallel.map(cache, in_processes: CPUS) { |c| parse(c) }.each { |entries| entries.each { |entry| yield entry } }
+        cache = []
+      end
+    end
+
+    Parallel.map(cache, in_processes: CPUS) { |c| parse(c) }.each { |entries| entries.each { |entry| yield entry } }
   end
 
-  def each_works
+  # Using my own fork pool
+  # ~ 19.8 seconds
+  def each_forkpool
+    enum = each_chunk(CHUNK_SIZE, '>').parallel(processes: CPUS) { |chunk| parse(chunk) }
+    enum.each { |entries| entries.each { |entry| yield entry } }
+  end
+
+  # Simple serial method
+  # ~ 7.8 seconds
+  def each_serial
     while chunk = get_chunk(CHUNK_SIZE, '>')
       parse(chunk) { |entry| yield entry }
     end
@@ -83,13 +106,16 @@ class Fasta < File
     seq_name = nil
     seq      = ""
     lines    = chunk.split($/)
+    entries  = []
 
     lines.each do |line|
       line.chomp!
 
       if line[0] == '>'
         if seq_name and not seq.empty?
-          yield Seq.new(seq_name, seq)
+          entry = Seq.new(seq_name, seq)
+
+          block_given? ? (yield entry) : (entries << entry)
    
           seq_name = nil
           seq      = ""
@@ -102,11 +128,54 @@ class Fasta < File
     end
    
     if seq_name and not seq.empty?
-      yield Seq.new(seq_name, seq)
+      entry = Seq.new(seq_name, seq)
+
+      block_given? ? (yield entry) : (entries << entry)
     end
+
+    entries
   end
 end
 
-Fasta.open("/Users/maasha/test10.fna") do |ios|
-  ios.each { |entry| puts entry.to_fasta }  # Do something with each entry
+# Create some mock data
+
+temp_file = Tempfile.new('test.fna')
+
+File.open(temp_file, 'w') do |ios|
+  1_000_000.times do |i|
+    ios << ">ILLUMINA-#{i}E_0004:2:1:1040:5263#TTAGGC/1\nTTCGGCATCGGCGGCGACGTTGGCGGCGGGGCCGGGCGGGTCGANNNCAT\n"
+  end
 end
+
+# Mock data created
+
+$stderr.puts "starting"
+
+CPUS       = 2
+CHUNK_SIZE = 1024 * 20_000   # 20 Mb chunks
+
+each_parallel = Proc.new do
+  Fasta.open(temp_file) do |ios|
+    ios.each_parallel { |entry| entry.to_fasta }  # Do something with each entry
+  end
+end
+
+each_forkpool = Proc.new do
+  Fasta.open(temp_file) do |ios|
+    ios.each_forkpool { |entry| entry.to_fasta }  # Do something with each entry
+  end
+end
+
+each_serial = Proc.new do
+  Fasta.open(temp_file) do |ios|
+    ios.each_serial { |entry| entry.to_fasta }  # Do something with each entry
+  end
+end
+
+Benchmark.bm() do |x|
+  x.report("Parallel") { each_parallel.call }
+  x.report("Forkpool") { each_forkpool.call }
+  x.report("Serial")   { each_serial.call }
+end
+
+File.delete temp_file
