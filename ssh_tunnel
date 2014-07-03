@@ -1,19 +1,131 @@
 #!/bin/bash
 
 # Martin A. Hansen, mail@maasha.dk, 2014.
-# Script for setting up/tearing down a reverse SSH tunnel.
-# See http://www.howtoforge.com/reverse-ssh-tunneling
-# and http://www.thegeekstuff.com/2013/11/reverse-ssh-tunnel.
+#
+# Easy secure remote point-to-point login access
+# ----------------------------------------------
+# 
+# On Mac, Linux and Unix machines regular users without administrator 
+# priviledge can provide remote login access to each other very easily.
+# The following describes how to do this in a secure way, even between
+# machines behind firewalls. To a non-technical person this may sound 
+# insecure, but it is not.
+# 
+# To do this, the ssh package is used to create a "reverse tunnel": if
+# machine A should have access to machine B, then B first connects to 
+# A, then A gets into B via that connection. Before describing the 
+# steps, some background information:
+# 
+# http://www.howtoforge.com/reverse-ssh-tunneling
+# http://www.thegeekstuff.com/2013/11/reverse-ssh-tunnel
+# 
+# Also take a look at the top sectionn of the accompanying ssh_tunnel 
+# script. 
+# 
+# Consider this scenario: machine B is behind a company firewall, but
+# user B would like user A, who is not behind a firewall, to log into 
+# it for better customer support for example. Here are the steps to do 
+# that:
+# 
+# * User A first tells B the IP-number or full domain name of A, and 
+#  a user name and port on A, for B to connect to. 
+# 
+# * B edits ssh_tunnel and sets the variables 
+# 
+#  REMOTE_USER        (set to "a-user" in the examples below)
+#  REMOTE_HOST        (set to "a-host" below )
+#  REVERSE_BIND       (set to "a-port" below )
+# 
+#  to the values given by A.
+# 
+# * B connects to A with 
+# 
+#  ssh a-user@a-host
+#  
+#  on the command line. There will be a password prompt, and A must 
+#  tell B the password, but this is just for getting into A the 
+#  first time. 
+# 
+# * B creates password-less login on A. This is done by appending 
+# 
+#  ~/.ssh/id_rsa.pub 
+# 
+#  on B to
+#  
+#  ~/.ssh/authorized_keys
+# 
+#  in the agreed user account on A. If B does not have the id_rsa.pub 
+#  file, then generate it by running
+# 
+#  ssh-keygen
+# 
+#  with no arguments and accept all defaults. Try log out of A and 
+#  repeat the ssh login command above - there should now be no 
+#  password prompt.
+# 
+# * B starts the ssh_tunnel script like this:
+# 
+#  ./ssh_tunnel start
+# 
+#  If desired this can be done automatically when machine B starts,
+#  but this requires administrator rights. 
+# 
+# * A connects to B with 
+# 
+#  ssh -p a-port b-user@localhost 
+# 
+#  where b-user is the agreed account on B. There will be a password
+#  prompt and B must tell A the password. 
+# 
+# * A creates password-login on B. This is done as above, but appending
+#  A's ~/.ssh/id_rsa.pub file to B's ~/.ssh/authorized_keys file. 
+# 
+# A can now connect to B, without password prompt, with 
+# 
+# ssh -p a-port b-user@localhost
+# 
+# This command can be aliased to some shortcut, like "blogin". In the 
+# same way, the SSH provides commands for copying files back and forth, 
+# which can also be aliased for convenience. 
+# 
+# To a non-technical person this may sound insecure, but it is not. It
+# is a point-to-point connection that noone other than the two users on
+# A and B - who trust each other - can use. 
+
+
+# ---------------------- EDIT THESE -----------------------------
+
+# These variables should be changed between setups.
 
 REMOTE_USER="test"
+<<<<<<< HEAD
 REMOTE_PORT=22
 REMOTE_HOST="85.82.195.151"
 REMOTE_USER_HOST="$REMOTE_USER@$REMOTE_HOST"
+=======
+REMOTE_HOST="www.google.com"
+>>>>>>> a9cfba965a7e4b58bd0c8d5ad6d8e2b30a610c2b
 
 REVERSE_BIND=10002
+
+
+# --------------------- IGNORE THESE ----------------------------
+
+# These variables can be edited too, but it is usually not
+# necessary.
+
+REMOTE_PORT=22     # Not used?
+REMOTE_USER_HOST="$REMOTE_USER@$REMOTE_HOST"
+
 REVERSE_HOST="localhost"
 REVERSE_PORT=22
 REVERSE_BIND_HOST_PORT="$REVERSE_BIND:$REVERSE_HOST:$REVERSE_PORT"
+
+SSH_OPTIONS="ServerAliveInterval=50"
+LOG_FILE="$HOME/.tunnel_log"
+CONTROL_PATH="$HOME/.tunnel_socket"
+
+# -------------------------- CODE -------------------------------
 
 SSH_OPTIONS="ServerAliveInterval=50"
 LOG_FILE="$HOME/.tunnel_log"
