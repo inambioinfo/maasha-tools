@@ -98,16 +98,10 @@
 # These variables should be changed between setups.
 
 REMOTE_USER="test"
-<<<<<<< HEAD
 REMOTE_PORT=22
-REMOTE_HOST="85.82.195.151"
-REMOTE_USER_HOST="$REMOTE_USER@$REMOTE_HOST"
-=======
 REMOTE_HOST="www.google.com"
->>>>>>> a9cfba965a7e4b58bd0c8d5ad6d8e2b30a610c2b
-
+REMOTE_USER_HOST="$REMOTE_USER@$REMOTE_HOST"
 REVERSE_BIND=10002
-
 
 # --------------------- IGNORE THESE ----------------------------
 
