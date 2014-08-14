@@ -41,13 +41,12 @@ def find_suffix(files)
 end
 
 if ARGV.size == 0
-  $stderr.puts "Usage: #{File.basename(__FILE__)} <dir>" if ARGV.size == 0
+  $stderr.puts "Usage: #{File.basename(__FILE__)} <FASTQ files>" if ARGV.size == 0
   exit
 end
 
-dir = ARGV[0]
-
-files = Dir.glob("#{dir}/*").map { |file| File.basename(file) }.select { |file| file.match /_R1_/}.sort
+files = ARGV.dup
+files = files.map { |file| File.basename(file) }.select { |file| file.match /_R1_/}.sort
 
 prefix = find_prefix(files)
 suffix = find_suffix(files)
