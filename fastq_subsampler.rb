@@ -40,7 +40,7 @@ raise OptionParser::InvalidArgument, "Number must be even - not #{options[:numbe
 file = ARGV.dup.first
 
 $stderr.puts "Processing file: #{file}" if options[:verbose]
-`wc -l #{file}` =~ /^\s+(\d+)/
+`wc -l #{file}` =~ /^\s*(\d+)/
 lines   = $1.to_i
 records = lines / 4
 
