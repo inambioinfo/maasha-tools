@@ -8,7 +8,12 @@ ARGV << "-h" if ARGV.empty?
 options = {}
 
 OptionParser.new do |opts|
-  opts.banner = "Usage: #{File.basename(__FILE__)} [options] <FASTQ file>"
+  opts.banner = <<USAGE
+  Subsamples read pairs from interleaved FASTQ file.
+  
+  Usage: #{File.basename(__FILE__)} [options] <FASTQ file>
+
+USAGE
 
   opts.on("-h", "--help", "Display this screen" ) do
     $stderr.puts opts
