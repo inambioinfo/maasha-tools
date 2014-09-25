@@ -3,10 +3,15 @@
 require 'biopieces'
 require 'optparse'
 require 'csv'
+require 'google_hash'
 
 DEFAULT_SCORE_MIN  = 15
 DEFAULT_SCORE_MEAN = 16
 DEFAULT_MISMATCHES = 1
+
+def hash_index(index)
+  index.tr("ATCG", "0123").to_i
+end
 
 def permutate(list, options = {})
   permutations = options[:permutations] || 2
@@ -91,24 +96,29 @@ index2_file = fastq_files.grep(/_I2_/).first
 read1_file  = fastq_files.grep(/_R1_/).first
 read2_file  = fastq_files.grep(/_R2_/).first
 
-if read1_file =~ /.+(_S\d_L\d{3}_R1_\d{3}\.fastq.gz)$/
+if read1_file =~ /.+(_S\d_L\d{3}_R1_\d{3}\.fastq(?:\.gz)?)$/
   suffix1 = $1
 else
-  raise RunTimeError, "Unable to parse file suffix"
+  raise RuntimeError, "Unable to parse file suffix"
 end
 
-if read2_file =~ /.+(_S\d_L\d{3}_R2_\d{3}\.fastq.gz)$/
+if read2_file =~ /.+(_S\d_L\d{3}_R2_\d{3}\.fastq(?:\.gz)?)$/
   suffix2 = $1
 else
-  raise RunTimeError, "Unable to parse file suffix"
+  raise RuntimeError, "Unable to parse file suffix"
 end
 
 samples = CSV.read(options[:samples_file], col_sep: "\t")
 
-index_hash = {}
+if options[:mismatches_max] <= 1
+  index_hash = GoogleHashSparseLongToInt.new
+else
+  index_hash = GoogleHashDenseLongToInt.new
+end
+
 file_hash  = {}
 
-samples.each do |sample|
+samples.each_with_index do |sample, i|
   index_list1 = [sample[1]]
   index_list2 = [sample[2]]
 
@@ -117,22 +127,24 @@ samples.each do |sample|
 
   raise "Permutated list sizes differ: #{index_list1.size} != #{index_list2.size}" if index_list1.size != index_list2.size
 
-  index_list1.zip(index_list2).each.each do |index1, index2|
-    index_hash["#{index1}#{index2}".to_sym] = sample[0].to_sym
+  index_list1.product(index_list2).each do |index1, index2|
+    index_hash[hash_index("#{index1}#{index2}")] = i
   end
 
   file_forward = "#{sample[0]}#{suffix1}"
   file_reverse = "#{sample[0]}#{suffix2}"
-  io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: :gzip)
-  io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: :gzip)
-  file_hash[sample[0].to_sym] = [io_forward, io_reverse]
+  io_forward   = BioPieces::Fastq.open(file_forward, 'w')#, compress: :gzip)
+  io_reverse   = BioPieces::Fastq.open(file_reverse, 'w')#, compress: :gzip)
+  file_hash[i] = [io_forward, io_reverse]
 end
+
+undetermined = samples.size + 1
 
 file_forward = "Undertermined#{suffix1}"
 file_reverse = "Undertermined#{suffix2}"
-io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: :gzip)
-io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: :gzip)
-file_hash[:undetermined] = [io_forward, io_reverse]
+io_forward   = BioPieces::Fastq.open(file_forward, 'w')#, compress: :gzip)
+io_reverse   = BioPieces::Fastq.open(file_reverse, 'w')#, compress: :gzip)
+file_hash[undetermined] = [io_forward, io_reverse]
  
 stats = {
   count:           0,
@@ -158,25 +170,25 @@ begin
     if i1.scores_mean < options[:scores_mean]
       stats[:index1_bad_mean] += 2
       stats[:undetermined] += 2
-      io_forward, io_reverse = file_hash[:undetermined]
+      io_forward, io_reverse = file_hash[undetermined]
     elsif i2.scores_mean < options[:scores_mean]
       stats[:index2_bad_mean] += 2
       stats[:undetermined] += 2
-      io_forward, io_reverse = file_hash[:undetermined]
+      io_forward, io_reverse = file_hash[undetermined]
     elsif i1.scores_min < options[:scores_min]
       stats[:index1_bad_min] += 2
       stats[:undetermined] += 2
-      io_forward, io_reverse = file_hash[:undetermined]
+      io_forward, io_reverse = file_hash[undetermined]
     elsif i2.scores_min < options[:scores_min]
       stats[:index2_bad_min] += 2
       stats[:undetermined] += 2
-      io_forward, io_reverse = file_hash[:undetermined]
-    elsif sample_id = index_hash["#{i1.seq}#{i2.seq}".to_sym]
+      io_forward, io_reverse = file_hash[undetermined]
+    elsif sample_id = index_hash[hash_index("#{i1.seq}#{i2.seq}")]
       stats[:match] += 2
       io_forward, io_reverse = file_hash[sample_id]
     else
       stats[:undetermined] += 2
-      io_forward, io_reverse = file_hash[:undetermined]
+      io_forward, io_reverse = file_hash[undetermined]
     end
 
     io_forward.puts r1.to_fastq
