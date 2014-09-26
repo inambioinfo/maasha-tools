@@ -59,19 +59,24 @@ DEFAULT_SCORE_MIN  = 15
 DEFAULT_SCORE_MEAN = 16
 DEFAULT_MISMATCHES = 1
 
+INDEX_ID = 0
+INDEX1   = 1
+INDEX2   = 2
+
 def suffix_extract(file, options)
   if file =~ /.+(_S\d_L\d{3}_R[12]_\d{3}).+$/
     suffix = $1
-    case options[:compress]
-    when /gzip/
-      suffix << ".fastq.gz"
-    when /bzip2/
-      suffix << ".fastq.bz2"
-    else
-      suffix << ".fastq"
-    end
   else
     raise RuntimeError, "Unable to parse file suffix from: #{file}"
+  end
+
+  case options[:compress]
+  when /gzip/
+    suffix << ".fastq.gz"
+  when /bzip2/
+    suffix << ".fastq.bz2"
+  else
+    suffix << ".fastq"
   end
 
   suffix
@@ -91,7 +96,7 @@ def permutate(list, options = {})
     list.each do |word|
       (0 ... word.size).each do |pos|
         alphabet.each_char do |char|
-          new_word = word[0 ... pos] + char + word[ pos + 1 .. -1]
+          new_word = "#{word[0 ... pos]}#{char}#{word[pos + 1 .. -1]}"
 
           hash[new_word.to_sym] = true
         end
@@ -152,14 +157,14 @@ options[:output_dir]     ||= Dir.pwd
 
 Dir.mkdir options[:output_dir] unless File.directory? options[:output_dir]
 
-raise OptionParser::MissingArgument, "No samples_file specified."                                      unless options[:samples_file]
-raise OptionParser::InvalidArgument, "No such file: #{options[:samples_file]}"                         unless File.file? options[:samples_file]
-raise OptionParser::InvalidArgument, "mismatches_max must be >= 0 - not #{options[:mismatches_max]}"   unless options[:mismatches_max] >= 0
-raise OptionParser::InvalidArgument, "mismatches_max must be <= 3 - not #{options[:mismatches_max]}"   unless options[:mismatches_max] <= 3
-raise OptionParser::InvalidArgument, "scores_min must be >= 0 - not #{options[:scores_min]}"           unless options[:scores_min]     >= 0
-raise OptionParser::InvalidArgument, "scores_min must be <= 40 - not #{options[:scores_min]}"          unless options[:scores_min]     <= 40
-raise OptionParser::InvalidArgument, "scores_mean must be >= 0 - not #{options[:scores_mean]}"         unless options[:scores_mean]    >= 0
-raise OptionParser::InvalidArgument, "scores_mean must be <= 40 - not #{options[:scores_mean]}"        unless options[:scores_mean]    <= 40
+raise OptionParser::MissingArgument, "No samples_file specified."                                    unless options[:samples_file]
+raise OptionParser::InvalidArgument, "No such file: #{options[:samples_file]}"                       unless File.file? options[:samples_file]
+raise OptionParser::InvalidArgument, "mismatches_max must be >= 0 - not #{options[:mismatches_max]}" unless options[:mismatches_max] >= 0
+raise OptionParser::InvalidArgument, "mismatches_max must be <= 3 - not #{options[:mismatches_max]}" unless options[:mismatches_max] <= 3
+raise OptionParser::InvalidArgument, "scores_min must be >= 0 - not #{options[:scores_min]}"         unless options[:scores_min]     >= 0
+raise OptionParser::InvalidArgument, "scores_min must be <= 40 - not #{options[:scores_min]}"        unless options[:scores_min]     <= 40
+raise OptionParser::InvalidArgument, "scores_mean must be >= 0 - not #{options[:scores_mean]}"       unless options[:scores_mean]    >= 0
+raise OptionParser::InvalidArgument, "scores_mean must be <= 40 - not #{options[:scores_mean]}"      unless options[:scores_mean]    <= 40
 
 if options[:compress]
   unless options[:compress] =~ /^gzip|bzip2$/
@@ -175,25 +180,9 @@ index1_file = fastq_files.grep(/_I1_/).first
 index2_file = fastq_files.grep(/_I2_/).first
 read1_file  = fastq_files.grep(/_R1_/).first
 read2_file  = fastq_files.grep(/_R2_/).first
-
-suffix1 = suffix_extract(read1_file, options)
-suffix2 = suffix_extract(read2_file, options)
-
-if read2_file =~ /.+(_S\d_L\d{3}_R2_\d{3}).+$/
-  suffix2 = $1
-  case options[:compress]
-  when /gzip/
-    suffix2 << ".fastq.gz"
-  when /bzip2/
-    suffix2 << ".fastq.bz2"
-  else
-    suffix2 << ".fastq"
-  end
-else
-  raise RuntimeError, "Unable to parse file suffix"
-end
-
-samples = CSV.read(options[:samples_file], col_sep: "\t")
+suffix1     = suffix_extract(read1_file, options)
+suffix2     = suffix_extract(read2_file, options)
+samples     = CSV.read(options[:samples_file], col_sep: "\t")
 
 if options[:mismatches_max] <= 1
   index_hash = GoogleHashSparseLongToInt.new
@@ -204,8 +193,8 @@ end
 file_hash  = {}
 
 samples.each_with_index do |sample, i|
-  index_list1 = [sample[1]]
-  index_list2 = [sample[2]]
+  index_list1 = [sample[INDEX1]]
+  index_list2 = [sample[INDEX2]]
 
   index_list1 = permutate(index_list1, permutations: options[:mismatches_max])
   index_list2 = permutate(index_list2, permutations: options[:mismatches_max])
@@ -216,8 +205,8 @@ samples.each_with_index do |sample, i|
     index_hash[hash_index("#{index1}#{index2}")] = i
   end
 
-  file_forward = "#{sample[0]}#{suffix1}"
-  file_reverse = "#{sample[0]}#{suffix2}"
+  file_forward = "#{sample[INDEX_ID]}#{suffix1}"
+  file_reverse = "#{sample[INDEX_ID]}#{suffix2}"
   io_forward   = BioPieces::Fastq.open(File.join(options[:output_dir], file_forward), 'w', compress: options[:compress])
   io_reverse   = BioPieces::Fastq.open(File.join(options[:output_dir], file_reverse), 'w', compress: options[:compress])
   file_hash[i] = [io_forward, io_reverse]
@@ -294,8 +283,6 @@ begin
       stats[:time] = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
       pp stats
     end
-
-    break if stats[:count] == 10_000
   end
 ensure
   i1_io.close
@@ -307,8 +294,8 @@ end
 pp stats if options[:verbose]
 
 samples.each do |sample|
-  miss_hash[:forward].delete sample[1]
-  miss_hash[:reverse].delete sample[2]
+  miss_hash[:forward].delete sample[INDEX1]
+  miss_hash[:reverse].delete sample[INDEX2]
 end
 
 File.open(File.join(options[:output_dir], "Undetermined_forward.tsv"), 'w') do |ios|
