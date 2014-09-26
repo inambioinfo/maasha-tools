@@ -46,8 +46,7 @@ USAGE = <<USAGE
   given theshold.
 
   Two files `Undetermined_forward.tsv` and `Undetermined_reverse.tsv` are also
-  output containing the count of unmatched indexes pairs. This mean that one
-  index may appear in the samples file, but then the pair index was unmatched.
+  output containing the count of unmatched indexes.
 
   Usage: #{File.basename(__FILE__)} [options] <FASTQ files>
 
@@ -59,6 +58,24 @@ USAGE
 DEFAULT_SCORE_MIN  = 15
 DEFAULT_SCORE_MEAN = 16
 DEFAULT_MISMATCHES = 1
+
+def suffix_extract(file, options)
+  if file =~ /.+(_S\d_L\d{3}_R[12]_\d{3}).+$/
+    suffix = $1
+    case options[:compress]
+    when /gzip/
+      suffix << ".fastq.gz"
+    when /bzip2/
+      suffix << ".fastq.bz2"
+    else
+      suffix << ".fastq"
+    end
+  else
+    raise RuntimeError, "Unable to parse file suffix from: #{file}"
+  end
+
+  suffix
+end
 
 def hash_index(index)
   index.tr("ATCG", "0123").to_i
@@ -159,19 +176,8 @@ index2_file = fastq_files.grep(/_I2_/).first
 read1_file  = fastq_files.grep(/_R1_/).first
 read2_file  = fastq_files.grep(/_R2_/).first
 
-if read1_file =~ /.+(_S\d_L\d{3}_R1_\d{3}).+$/
-  suffix1 = $1
-  case options[:compress]
-  when /gzip/
-    suffix1 << ".fastq.gz"
-  when /bzip2/
-    suffix1 << ".fastq.bz2"
-  else
-    suffix1 << ".fastq"
-  end
-else
-  raise RuntimeError, "Unable to parse file suffix"
-end
+suffix1 = suffix_extract(read1_file, options)
+suffix2 = suffix_extract(read2_file, options)
 
 if read2_file =~ /.+(_S\d_L\d{3}_R2_\d{3}).+$/
   suffix2 = $1
@@ -288,6 +294,8 @@ begin
       stats[:time] = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
       pp stats
     end
+
+    break if stats[:count] == 10_000
   end
 ensure
   i1_io.close
@@ -297,6 +305,11 @@ ensure
 end
 
 pp stats if options[:verbose]
+
+samples.each do |sample|
+  miss_hash[:forward].delete sample[1]
+  miss_hash[:reverse].delete sample[2]
+end
 
 File.open(File.join(options[:output_dir], "Undetermined_forward.tsv"), 'w') do |ios|
   miss_hash[:forward].sort_by { |index, count| -1 * count }.each { |index, count| ios.puts "#{count}\t#{index}" }
