@@ -144,8 +144,10 @@ raise OptionParser::InvalidArgument, "scores_min must be <= 40 - not #{options[:
 raise OptionParser::InvalidArgument, "scores_mean must be >= 0 - not #{options[:scores_mean]}"         unless options[:scores_mean]    >= 0
 raise OptionParser::InvalidArgument, "scores_mean must be <= 40 - not #{options[:scores_mean]}"        unless options[:scores_mean]    <= 40
 
-if options[:compress] and (options[:compress] != :gzip or options[:compress] != :bzip2)
-  raise OptionParser::InvalidArgument, "Bad argument to --compress: #{options[:compress]}"
+if options[:compress]
+  unless options[:compress] =~ /^gzip|bzip2$/
+    raise OptionParser::InvalidArgument, "Bad argument to --compress: #{options[:compress]}"
+  end
 end
 
 fastq_files = ARGV.dup
@@ -157,14 +159,30 @@ index2_file = fastq_files.grep(/_I2_/).first
 read1_file  = fastq_files.grep(/_R1_/).first
 read2_file  = fastq_files.grep(/_R2_/).first
 
-if read1_file =~ /.+(_S\d_L\d{3}_R1_\d{3}\.fastq(?:\.gz)?)$/
+if read1_file =~ /.+(_S\d_L\d{3}_R1_\d{3}).+$/
   suffix1 = $1
+  case options[:compress]
+  when /gzip/
+    suffix1 << ".fastq.gz"
+  when /bzip2/
+    suffix1 << ".fastq.bz2"
+  else
+    suffix1 << ".fastq"
+  end
 else
   raise RuntimeError, "Unable to parse file suffix"
 end
 
-if read2_file =~ /.+(_S\d_L\d{3}_R2_\d{3}\.fastq(?:\.gz)?)$/
+if read2_file =~ /.+(_S\d_L\d{3}_R2_\d{3}).+$/
   suffix2 = $1
+  case options[:compress]
+  when /gzip/
+    suffix2 << ".fastq.gz"
+  when /bzip2/
+    suffix2 << ".fastq.bz2"
+  else
+    suffix2 << ".fastq"
+  end
 else
   raise RuntimeError, "Unable to parse file suffix"
 end
