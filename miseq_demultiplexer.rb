@@ -306,4 +306,8 @@ File.open(File.join(options[:output_dir], "Undetermined_reverse.tsv"), 'w') do |
   miss_hash[:reverse].sort_by { |index, count| -1 * count }.each { |index, count| ios.puts "#{count}\t#{index}" }
 end
 
+File.open(File.join(options[:output_dir], "Demultiplex.log"), 'w') do |ios|
+  PP.pp(stats, ios)
+end
+
 at_exit { file_hash.each_value { |value| value[0].close; value[1].close } }
