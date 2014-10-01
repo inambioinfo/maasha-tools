@@ -284,7 +284,7 @@ class Demultiplexer
           pp @stats
         end
 
-        break if @stats[:count] == 100_000
+        # break if @stats[:count] == 100_000
       end
     ensure
       i1_io.close
