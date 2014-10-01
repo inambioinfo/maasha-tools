@@ -5,8 +5,6 @@ require 'optparse'
 require 'csv'
 require 'google_hash'
 
-#DEBUG = 100_000
-
 USAGE = <<USAGE
   This program demultiplexes Illumina Paired data given a samples file and four
   FASTQ files containing forward and reverse index data and forward and reverse
@@ -270,8 +268,6 @@ class Demultiplexer
           @stats[:time] = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
           pp @stats
         end
-
-        break if DEBUG and @stats[:count] == DEBUG
       end
     ensure
       i1_io.close
