@@ -38,15 +38,20 @@ USAGE = <<USAGE
 
   Demultiplexing will generate file pairs according to the sample information
   in the samples file and input file suffix, one pair per sample, and these
-  will be output in the same directory.
+  will be output to the output directory. Also a file pair with undetermined 
+  reads are created where the index sequence is appended to the sequence name.
   
   It is possible to allow up to three mismatches per index. Also, read pairs are
-  discared if either of the indexes have a mean quality score below a given
+  filtered if either of the indexes have a mean quality score below a given
   threshold or any single position in the index have a quality score below a 
   given theshold.
 
   Two files `Undetermined_forward.tsv` and `Undetermined_reverse.tsv` are also
   output containing the count of unmatched indexes.
+
+  Finally, a log file `Demultiplex.log` is output containing the stats of the
+  demultiplexing process along with a list of the samples ids and unique index1
+  and index2 sequences.
 
   Usage: #{File.basename(__FILE__)} [options] <FASTQ files>
 
@@ -246,31 +251,30 @@ class Demultiplexer
       print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
 
       while i1 = i1_io.get_entry and i2 = i2_io.get_entry and r1 = r1_io.get_entry and r2 = r2_io.get_entry
+        found = false
+
         if i1.scores_mean < @options[:scores_mean]
           @stats[:index1_bad_mean] += 2
-          @stats[:undetermined] += 2
-          io_forward, io_reverse = @file_hash[@undetermined]
         elsif i2.scores_mean < @options[:scores_mean]
           @stats[:index2_bad_mean] += 2
-          @stats[:undetermined] += 2
-          io_forward, io_reverse = @file_hash[@undetermined]
         elsif i1.scores_min < @options[:scores_min]
           @stats[:index1_bad_min] += 2
-          @stats[:undetermined] += 2
-          io_forward, io_reverse = @file_hash[@undetermined]
         elsif i2.scores_min < @options[:scores_min]
           @stats[:index2_bad_min] += 2
-          @stats[:undetermined] += 2
-          io_forward, io_reverse = @file_hash[@undetermined]
         elsif sample_id = @index_hash[hash_index("#{i1.seq}#{i2.seq}")]
           @stats[:match] += 2
+          found = true
           io_forward, io_reverse = @file_hash[sample_id]
         else
-          @stats[:undetermined] += 2
-          io_forward, io_reverse = @file_hash[@undetermined]
-
           @miss_hash[:forward][i1.seq] += 1
           @miss_hash[:reverse][i2.seq] += 1
+        end
+
+        unless found
+          r1.seq_name = "#{r1.seq_name} #{i1.seq}" 
+          r2.seq_name = "#{r2.seq_name} #{i2.seq}" 
+          io_forward, io_reverse = @file_hash[@undetermined]
+          @stats[:undetermined] += 2
         end
 
         io_forward.puts r1.to_fastq
