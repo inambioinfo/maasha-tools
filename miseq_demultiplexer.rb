@@ -317,7 +317,7 @@ class Demultiplexer
   def save_log
     @stats[:sample_id] = @samples.map { |sample| sample.id }
     @stats[:index1]    = @samples.inject({}) { |memo, obj| memo[obj.index1] = true; memo}.keys.sort
-    @stats[:index2]    = @samples.inject({}) { |memo, obj| memo[obj.index1] = true; memo}.keys.sort
+    @stats[:index2]    = @samples.inject({}) { |memo, obj| memo[obj.index2] = true; memo}.keys.sort
 
     File.open(File.join(@options[:output_dir], "Demultiplex.log"), 'w') do |ios|
       PP.pp(@stats, ios)
