@@ -56,10 +56,6 @@ USAGE = <<USAGE
 USAGE
 
 class Demultiplexer
-  INDEX_ID = 0
-  INDEX1   = 1
-  INDEX2   = 2
-
   def self.run(fastq_files, options)
     d = self.new(fastq_files, options)
     d.demultiplex
@@ -102,22 +98,41 @@ class Demultiplexer
   end
 
   def samples_parse
-    @samples = CSV.read(@options[:samples_file], col_sep: "\t")
+    @samples = []
 
-    errors = []
-    lookup = {}
-
-    @samples.each do |id, index1, index2|
-      if id2 = lookup["#{index1}#{index2}"]
-        errors << [id, id2]
-      else
-        lookup["#{index1}#{index2}"] = id
+    CSV.read(@options[:samples_file], col_sep: "\t").each do |id, index1, index2|
+      if @options[:revcomp_index1]
+        index1 = BioPieces::Seq.new(seq: index1, type: :dna).reverse.complement.seq
       end
+
+      if @options[:revcomp_index2]
+        index2 = BioPieces::Seq.new(seq: index2, type: :dna).reverse.complement.seq
+      end
+
+      @samples << Sample.new(id, index1, index2)
+    end
+
+    errors       = []
+    lookup_index = {}
+    lookup_id    = {}
+
+    @samples.each do |sample|
+      if id2 = lookup_index["#{sample.index1}#{sample.index2}"]
+        errors << ["Samples with same index combination", sample.id, id2].join("\t")
+      else
+        lookup_index["#{sample.index1}#{sample.index2}"] = sample.id
+      end
+
+      if lookup_id[sample.id]
+        errors << ["Non-unique sample id", sample.id].join("\t")
+      end
+
+      lookup_id[sample.id] = true
     end
 
     unless errors.empty?
       pp errors
-      raise "multiple samples uses same index combinations."
+      raise "errors found in sample file."
     end
 
     @samples
@@ -127,8 +142,8 @@ class Demultiplexer
     file_hash  = {}
 
     @samples.each_with_index do |sample, i|
-      file_forward = "#{sample[INDEX_ID]}#{@suffix1}"
-      file_reverse = "#{sample[INDEX_ID]}#{@suffix2}"
+      file_forward = "#{sample.id}#{@suffix1}"
+      file_reverse = "#{sample.id}#{@suffix2}"
       io_forward   = BioPieces::Fastq.open(File.join(@options[:output_dir], file_forward), 'w', compress: @options[:compress])
       io_reverse   = BioPieces::Fastq.open(File.join(@options[:output_dir], file_reverse), 'w', compress: @options[:compress])
       file_hash[i] = [io_forward, io_reverse]
@@ -151,8 +166,8 @@ class Demultiplexer
     index_hash = (@options[:mismatches_max] <= 1) ? GoogleHashSparseLongToInt.new : GoogleHashDenseLongToInt.new
 
     @samples.each_with_index do |sample, i|
-      index_list1 = [sample[INDEX1]]
-      index_list2 = [sample[INDEX2]]
+      index_list1 = [sample.index1]
+      index_list2 = [sample.index2]
 
       index_list1 = permutate(index_list1, permutations: @options[:mismatches_max])
       index_list2 = permutate(index_list2, permutations: @options[:mismatches_max])
@@ -268,6 +283,8 @@ class Demultiplexer
           @stats[:time] = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
           pp @stats
         end
+
+        break if @stats[:count] == 100_000
       end
     ensure
       i1_io.close
@@ -284,8 +301,8 @@ class Demultiplexer
 
   def save_undetermined
     @samples.each do |sample|
-      @miss_hash[:forward].delete sample[INDEX1]
-      @miss_hash[:reverse].delete sample[INDEX2]
+      @miss_hash[:forward].delete sample.index1
+      @miss_hash[:reverse].delete sample.index2
     end
 
     File.open(File.join(@options[:output_dir], "Undetermined_forward.tsv"), 'w') do |ios|
@@ -298,9 +315,16 @@ class Demultiplexer
   end
 
   def save_log
+    @stats[:sample_id] = @samples.map { |sample| sample.id }
+    @stats[:index1]    = @samples.inject({}) { |memo, obj| memo[obj.index1] = true; memo}.keys.sort
+    @stats[:index2]    = @samples.inject({}) { |memo, obj| memo[obj.index1] = true; memo}.keys.sort
+
     File.open(File.join(@options[:output_dir], "Demultiplex.log"), 'w') do |ios|
       PP.pp(@stats, ios)
     end
+  end
+
+  Sample = Struct.new :id, :index1, :index2 do
   end
 end
 
@@ -326,6 +350,14 @@ OptionParser.new do |opts|
 
   opts.on("-m", "--mismatches_max <uint>", Integer, "Maximum mismatches_max allowed (default=#{DEFAULT_MISMATCHES})") do |o|
     options[:mismatches_max] = o
+  end
+
+  opts.on("--revcomp_index1", "Reverse complement index1") do |o|
+    options[:revcomp_index1] = o
+  end
+
+  opts.on("--revcomp_index2", "Reverse complement index2") do |o|
+    options[:revcomp_index2] = o
   end
 
   opts.on("--scores_min <uint>", Integer, "Drop reads if a single position in the index have a quality score below scores_min (default=#{DEFAULT_SCORE_MIN})") do |o|
