@@ -5,7 +5,7 @@ require 'optparse'
 require 'csv'
 require 'google_hash'
 
-DEBUG = 100_000
+#DEBUG = 100_000
 
 USAGE = <<USAGE
   This program demultiplexes Illumina Paired data given a samples file and four
