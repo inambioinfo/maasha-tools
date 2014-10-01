@@ -103,6 +103,28 @@ class Demultiplexer
     suffix
   end
 
+  def samples_parse
+    @samples = CSV.read(@options[:samples_file], col_sep: "\t")
+
+    errors = []
+    lookup = {}
+
+    @samples.each do |id, index1, index2|
+      if id2 = lookup["#{index1}#{index2}"]
+        errors << [id, id2]
+      else
+        lookup["#{index1}#{index2}"] = id
+      end
+    end
+
+    unless errors.empty?
+      pp errors
+      raise "multiple samples uses same index combinations."
+    end
+
+    @samples
+  end
+
   def files_open
     file_hash  = {}
 
@@ -181,7 +203,7 @@ class Demultiplexer
     @read2_file  = @fastq_files.grep(/_R2_/).first
     @suffix1     = suffix_extract(@read1_file)
     @suffix2     = suffix_extract(@read2_file)
-    @samples     = CSV.read(@options[:samples_file], col_sep: "\t")
+    @samples     = samples_parse
     @file_hash   = files_open
     @index_hash  = index_create
 
