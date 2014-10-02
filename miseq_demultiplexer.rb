@@ -284,7 +284,8 @@ class Demultiplexer
 
         if @options[:verbose] and (@stats[:count] % 1_000) == 0
           print "\e[1;1H"    # Console code to move cursor to 1,1 coordinate.
-          @stats[:time] = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
+          @stats[:undetermined_percent] = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
+          @stats[:time]  = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
           pp @stats
         end
 
