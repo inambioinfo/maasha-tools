@@ -180,7 +180,13 @@ class Demultiplexer
       raise "Permutated list sizes differ: #{index_list1.size} != #{index_list2.size}" if index_list1.size != index_list2.size
 
       index_list1.product(index_list2).each do |index1, index2|
-        index_hash[hash_index("#{index1}#{index2}")] = i
+        key = hash_index("#{index1}#{index2}")
+
+        if j = index_hash[key]
+          raise "Index combo of #{index1} and #{index2} already exists for sample id: #{@samples[j].id}"
+        else
+          index_hash[key] = i
+        end
       end
     end
 
