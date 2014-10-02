@@ -46,9 +46,6 @@ USAGE = <<USAGE
   threshold or any single position in the index have a quality score below a 
   given theshold.
 
-  Two files `Undetermined_forward.tsv` and `Undetermined_reverse.tsv` are also
-  output containing the count of unmatched indexes.
-
   Finally, a log file `Demultiplex.log` is output containing the stats of the
   demultiplexing process along with a list of the samples ids and unique index1
   and index2 sequences.
@@ -78,7 +75,6 @@ class Demultiplexer
     @samples      = nil
     @undetermined = nil
     @stats        = nil
-    @miss_hash    = nil
     @file_hash    = nil
     @index_hash   = nil
   end
@@ -241,11 +237,6 @@ class Demultiplexer
       index2_bad_min:  0
     }
 
-    @miss_hash = {
-      forward: Hash.new(0),
-      reverse: Hash.new(0)
-    }
-
     time_start = Time.now
 
     begin
@@ -259,7 +250,11 @@ class Demultiplexer
       while i1 = i1_io.get_entry and i2 = i2_io.get_entry and r1 = r1_io.get_entry and r2 = r2_io.get_entry
         found = false
 
-        if i1.scores_mean < @options[:scores_mean]
+        if sample_id = @index_hash[hash_index("#{i1.seq}#{i2.seq}")]
+          @stats[:match] += 2
+          found = true
+          io_forward, io_reverse = @file_hash[sample_id]
+        elsif i1.scores_mean < @options[:scores_mean]
           @stats[:index1_bad_mean] += 2
         elsif i2.scores_mean < @options[:scores_mean]
           @stats[:index2_bad_mean] += 2
@@ -267,13 +262,6 @@ class Demultiplexer
           @stats[:index1_bad_min] += 2
         elsif i2.scores_min < @options[:scores_min]
           @stats[:index2_bad_min] += 2
-        elsif sample_id = @index_hash[hash_index("#{i1.seq}#{i2.seq}")]
-          @stats[:match] += 2
-          found = true
-          io_forward, io_reverse = @file_hash[sample_id]
-        else
-          @miss_hash[:forward][i1.seq] += 1
-          @miss_hash[:reverse][i2.seq] += 1
         end
 
         unless found
@@ -306,23 +294,7 @@ class Demultiplexer
 
     pp @stats if @options[:verbose]
 
-    save_undetermined
     save_log
-  end
-
-  def save_undetermined
-    @samples.each do |sample|
-      @miss_hash[:forward].delete sample.index1
-      @miss_hash[:reverse].delete sample.index2
-    end
-
-    File.open(File.join(@options[:output_dir], "Undetermined_forward.tsv"), 'w') do |ios|
-      @miss_hash[:forward].sort_by { |index, count| -1 * count }.each { |index, count| ios.puts "#{count}\t#{index}" }
-    end
-
-    File.open(File.join(@options[:output_dir], "Undetermined_reverse.tsv"), 'w') do |ios|
-      @miss_hash[:reverse].sort_by { |index, count| -1 * count }.each { |index, count| ios.puts "#{count}\t#{index}" }
-    end
   end
 
   def save_log
