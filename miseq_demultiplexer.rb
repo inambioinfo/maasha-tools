@@ -183,7 +183,7 @@ class Demultiplexer
         key = hash_index("#{index1}#{index2}")
 
         if j = index_hash[key]
-          raise "Index combo of #{index1} and #{index2} already exists for sample id: #{@samples[j].id}"
+          raise "Index combo of #{index1} and #{index2} already exists for sample id: #{@samples[j].id} and #{sample.id}"
         else
           index_hash[key] = i
         end
@@ -339,7 +339,7 @@ class Demultiplexer
   end
 end
 
-DEFAULT_SCORE_MIN  = 15
+DEFAULT_SCORE_MIN  = 16
 DEFAULT_SCORE_MEAN = 16
 DEFAULT_MISMATCHES = 1
 
