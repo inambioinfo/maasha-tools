@@ -163,7 +163,7 @@ class Demultiplexer
     time_start = Time.now
 
     begin
-      i1_io, i2_io, r1_io, r2_io = open_input_files
+      i1_io, i2_io, r1_io, r2_io = open_input_files(identify_input_files)
 
       while (i1 = i1_io.next_entry) &&
             (i2 = i2_io.next_entry) &&
@@ -171,7 +171,7 @@ class Demultiplexer
             (r2 = r2_io.next_entry)
         found = false
 
-        next if !index_qual_ok?
+        next unless index_qual_ok?(i1, i2)
 
         if (sample_id = @index_hash["#{i1.seq}#{i2.seq}".hash])
           @stats[:match] += 2
@@ -192,13 +192,13 @@ class Demultiplexer
         @stats[:count] += 2
 
         if @options[:verbose] && (@stats[:count] % 1_000) == 0
-          print_stats(time_start)
+          print_stats(Time.now - time_start)
         end
 
         # break if @stats[:count] == 100_000
       end
     ensure
-      [i1_io, i2_io, r1_io, r2_i].map(&:close)
+      [i1_io, i2_io, r1_io, r2_io].map(&:close)
     end
 
     pp @stats if @options[:verbose]
@@ -211,36 +211,67 @@ class Demultiplexer
   # Method to check the quality scores of the given indexes.
   # If the mean score is higher than @options[:scores_mean] or
   # if the min score is higher than @options[:scores_min] then
-  # the indes are OK.
+  # the indexes are OK.
   #
-  # i1 - Index1 Seq object.
-  # i2 - Index2 Seq object.
+  # index1 - Index1 Seq object.
+  # index2 - Index2 Seq object.
   #
   # Returns true if quality OK, else false.
-  def index_qual_ok?(i1, i2)
-    if i1.scores_mean < @options[:scores_mean]
-      @stats[:index1_bad_mean] += 2 && (return false)
-    elsif i2.scores_mean < @options[:scores_mean]
-      @stats[:index2_bad_mean] += 2 && (return false)
-    elsif i1.scores_min < @options[:scores_min]
-      @stats[:index1_bad_min] += 2 && (return false)
-    elsif i2.scores_min < @options[:scores_min]
-      @stats[:index2_bad_min] += 2 && (return false)
+  def index_qual_ok?(index1, index2)
+    index_qual_mean_ok?(index1, index2) &&
+      index_qual_min_ok?(index1, index2)
+  end
+
+  # Method to check the mean quality scores of the given indexes.
+  # If the mean score is higher than @options[:scores_mean] the
+  # indexes are OK.
+  #
+  # index1 - Index1 Seq object.
+  # index2 - Index2 Seq object.
+  #
+  # Returns true if quality mean OK, else false.
+  def index_qual_mean_ok?(index1, index2)
+    if index1.scores_mean < @options[:scores_mean]
+      @stats[:index1_bad_mean] += 2
+      return false
+    elsif index2.scores_mean < @options[:scores_mean]
+      @stats[:index2_bad_mean] += 2
+      return false
     end
 
-    return true
+    true
+  end
+
+  # Method to check the min quality scores of the given indexes.
+  # If the min score is higher than @options[:scores_min] the
+  # indexes are OK.
+  #
+  # index1 - Index1 Seq object.
+  # index2 - Index2 Seq object.
+  #
+  # Returns true if quality min OK, else false.
+  def index_qual_min_ok?(index1, index2)
+    if index1.scores_min < @options[:scores_min]
+      @stats[:index1_bad_min] += 2
+      return false
+    elsif index2.scores_min < @options[:scores_min]
+      @stats[:index2_bad_min] += 2
+      return false
+    end
+
+    true
   end
 
   # Method to clear the screen and print the current stats.
   #
-  # time_start - Time object with time for run start.
+  # time_elapsed - Time object with elapsed time.
   #
   # Returns nothing.
-  def print_stats(time_start)
+  def print_stats(time_elapsed)
     print "\e[1;1H"    # Console code to move cursor to 1,1 coordinate.
 
     percent = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
-    time = (Time.mktime(0) + (Time.now - time_start)).strftime('%H:%M:%S')
+    time = (Time.mktime(0) + time_elapsed).strftime('%H:%M:%S')
     @stats[:undetermined_percent] = percent
     @stats[:time] = time
 
@@ -357,15 +388,22 @@ class Demultiplexer
   def samples_reverse_complement(samples)
     samples.each do |sample|
       if @options[:revcomp_index1]
-        sample.index1 = BioPieces::Seq.new(seq: sample.index1, type: :dna).
-          reverse.complement.seq
+        sample.index1 = index_reverse_complement(sample.index1)
       end
 
       if @options[:revcomp_index2]
-        sample.index2 = BioPieces::Seq.new(seq: sample.index2, type: :dna).
-          reverse.complement.seq
+        sample.index2 = index_reverse_complement(sample.index2)
       end
     end
+  end
+
+  # Method that reverse-complements a given index sequence.
+  #
+  # index - Index String.
+  #
+  # Returns reverse-complemented index String.
+  def index_reverse_complement(index)
+    BioPieces::Seq.new(seq: index, type: :dna).reverse.complement.seq
   end
 
   # Method that iterates over the a given Array of sample Objects, and if
@@ -411,15 +449,31 @@ class Demultiplexer
     errors
   end
 
+  # Method identify the different input files.
+  #
+  # Returns an Array with input files (Strings).
+  def identify_input_files
+    input_files = []
+
+    input_files << @fastq_files.grep(/_I1_/).first
+    input_files << @fastq_files.grep(/_I2_/).first
+    input_files << @fastq_files.grep(/_R1_/).first
+    input_files << @fastq_files.grep(/_R2_/).first
+
+    input_files
+  end
+
   # Method that opens the input files for reading.
   #
+  # input_files - Array with input file paths.
+  #
   # Returns an Array with IO objects (file handles).
-  def open_input_files
+  def open_input_files(input_files)
     file_ios = []
-    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_I1_/).first)
-    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_I2_/).first)
-    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_R1_/).first)
-    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_R2_/).first)
+
+    input_files.each do |input_file|
+      file_ios << BioPieces::Fastq.open(input_file)
+    end
 
     file_ios
   end
@@ -490,7 +544,7 @@ class Demultiplexer
       index_list1 = permutate([sample.index1], mismatches_max)
       index_list2 = permutate([sample.index2], mismatches_max)
 
-      index_check_list_sizes(index_list1, index_list2)
+      # index_check_list_sizes(index_list1, index_list2)
 
       index_list1.product(index_list2).each do |index1, index2|
         key = "#{index1}#{index2}".hash
@@ -600,20 +654,39 @@ class Demultiplexer
     new_words
   end
 
+  # Method to save stats to the log file 'Demultiplex.log' in the output
+  # directory.
+  #
+  # Returns nothing.
   def save_log
     @stats[:sample_id] = @samples.map(&:id)
 
-    @stats[:index1] = @samples.each_with_object({}) do |a, e|
-      a[e.index1] = true
-    end.keys.sort
-
-    @stats[:index2] = @samples.each_with_object({}) do |a, e|
-      a[e.index2] = true
-    end.keys.sort
+    @stats[:index1] = uniq_index1
+    @stats[:index2] = uniq_index2
 
     File.open(File.join(@options[:output_dir], 'Demultiplex.log'), 'w') do |ios|
       PP.pp(@stats, ios)
     end
+  end
+
+  # Method that iterates over @samples and compiles a sorted Array with all
+  # unique index1 sequences.
+  #
+  # Returns Array with uniq index1 sequences.
+  def uniq_index1
+    @stats[:index1] = @samples.each_with_object(SortedSet.new) do |a, e|
+      a << e.index1
+    end.to_a
+  end
+
+  # Method that iterates over @samples and compiles a sorted Array with all
+  # unique index2 sequences.
+  #
+  # Returns Array with uniq index2 sequences.
+  def uniq_index2
+    @stats[:index2] = @samples.each_with_object(SortedSet.new) do |a, e|
+      a << e.index2
+    end.to_a
   end
 
   Sample = Struct.new(:id, :index1, :index2)
