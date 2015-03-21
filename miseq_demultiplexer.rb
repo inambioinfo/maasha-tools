@@ -133,7 +133,7 @@ class Demultiplexer
   #
   # Examples
   #
-  #   extract_slr
+  #   stats_init
   #   # => {:count=>0,
   #         :match=>0,
   #         :undetermined=>0,
@@ -156,18 +156,14 @@ class Demultiplexer
   end
 
   def demultiplex
-    @file_hash  = files_open
+    @file_hash  = open_output_files
     @index_hash = index_populate(index_init, @options[:mismatches_max])
 
+    print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
     time_start = Time.now
 
     begin
-      i1_io = BioPieces::Fastq.open(@fastq_files.grep(/_I1_/).first)
-      i2_io = BioPieces::Fastq.open(@fastq_files.grep(/_I2_/).first)
-      r1_io = BioPieces::Fastq.open(@fastq_files.grep(/_R1_/).first)
-      r2_io = BioPieces::Fastq.open(@fastq_files.grep(/_R2_/).first)
-
-      print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
+      i1_io, i2_io, r1_io, r2_io = open_input_files
 
       while (i1 = i1_io.next_entry) &&
             (i2 = i2_io.next_entry) &&
@@ -175,18 +171,12 @@ class Demultiplexer
             (r2 = r2_io.next_entry)
         found = false
 
+        next if !index_qual_ok?
+
         if (sample_id = @index_hash["#{i1.seq}#{i2.seq}".hash])
           @stats[:match] += 2
           found = true
           io_forward, io_reverse = @file_hash[sample_id]
-        elsif i1.scores_mean < @options[:scores_mean]
-          @stats[:index1_bad_mean] += 2
-        elsif i2.scores_mean < @options[:scores_mean]
-          @stats[:index2_bad_mean] += 2
-        elsif i1.scores_min < @options[:scores_min]
-          @stats[:index1_bad_min] += 2
-        elsif i2.scores_min < @options[:scores_min]
-          @stats[:index2_bad_min] += 2
         end
 
         unless found
@@ -202,22 +192,13 @@ class Demultiplexer
         @stats[:count] += 2
 
         if @options[:verbose] && (@stats[:count] % 1_000) == 0
-          print "\e[1;1H"    # Console code to move cursor to 1,1 coordinate.
-
-          percent = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
-          time = (Time.mktime(0) + (Time.now - time_start)).strftime('%H:%M:%S')
-          @stats[:undetermined_percent] = percent
-          @stats[:time] = time
-          pp @stats
+          print_stats(time_start)
         end
 
         # break if @stats[:count] == 100_000
       end
     ensure
-      i1_io.close
-      i2_io.close
-      r1_io.close
-      r2_io.close
+      [i1_io, i2_io, r1_io, r2_i].map(&:close)
     end
 
     pp @stats if @options[:verbose]
@@ -226,6 +207,45 @@ class Demultiplexer
   end
 
   private
+
+  # Method to check the quality scores of the given indexes.
+  # If the mean score is higher than @options[:scores_mean] or
+  # if the min score is higher than @options[:scores_min] then
+  # the indes are OK.
+  #
+  # i1 - Index1 Seq object.
+  # i2 - Index2 Seq object.
+  #
+  # Returns true if quality OK, else false.
+  def index_qual_ok?(i1, i2)
+    if i1.scores_mean < @options[:scores_mean]
+      @stats[:index1_bad_mean] += 2 && (return false)
+    elsif i2.scores_mean < @options[:scores_mean]
+      @stats[:index2_bad_mean] += 2 && (return false)
+    elsif i1.scores_min < @options[:scores_min]
+      @stats[:index1_bad_min] += 2 && (return false)
+    elsif i2.scores_min < @options[:scores_min]
+      @stats[:index2_bad_min] += 2 && (return false)
+    end
+
+    return true
+  end
+
+  # Method to clear the screen and print the current stats.
+  #
+  # time_start - Time object with time for run start.
+  #
+  # Returns nothing.
+  def print_stats(time_start)
+    print "\e[1;1H"    # Console code to move cursor to 1,1 coordinate.
+
+    percent = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
+    time = (Time.mktime(0) + (Time.now - time_start)).strftime('%H:%M:%S')
+    @stats[:undetermined_percent] = percent
+    @stats[:time] = time
+
+    pp @stats
+  end
 
   # Method that extracts the Sample, Lane, Region information from a given file.
   #
@@ -391,16 +411,29 @@ class Demultiplexer
     errors
   end
 
+  # Method that opens the input files for reading.
+  #
+  # Returns an Array with IO objects (file handles).
+  def open_input_files
+    file_ios = []
+    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_I1_/).first)
+    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_I2_/).first)
+    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_R1_/).first)
+    file_ios << BioPieces::Fastq.open(@fastq_files.grep(/_R2_/).first)
+
+    file_ios
+  end
+
   # Method that opens the output files for writing.
   #
   # Returns a Hash with an incrementing index as keys, and a tuple of file
   # handles as values.
-  def files_open
+  def open_output_files
     file_hash = {}
     comp      = @options[:compress]
 
-    file_hash.merge!(files_open_samples(comp))
-    file_hash.merge!(files_open_undet(comp))
+    file_hash.merge!(open_output_files_samples(comp))
+    file_hash.merge!(open_output_files_undet(comp))
 
     at_exit { file_hash.each_value { |value| value.map(&:close) } }
 
@@ -413,7 +446,7 @@ class Demultiplexer
   #
   # Returns a Hash with an incrementing index as keys, and a tuple of file
   # handles as values.
-  def files_open_samples(comp)
+  def open_output_files_samples(comp)
     file_hash = {}
 
     @samples.each_with_index do |sample, i|
@@ -433,7 +466,7 @@ class Demultiplexer
   #
   # Returns a Hash with an incrementing index as keys, and a tuple of file
   # handles as values.
-  def files_open_undet(comp)
+  def open_output_files_undet(comp)
     file_hash     = {}
     @undetermined = @samples.size + 1
 
