@@ -157,7 +157,7 @@ class Demultiplexer
 
   def demultiplex
     @file_hash  = files_open
-    @index_hash = index_create
+    @index_hash = index_populate(index_init, @options[:mismatches_max])
 
     time_start = Time.now
 
@@ -338,12 +338,12 @@ class Demultiplexer
     samples.each do |sample|
       if @options[:revcomp_index1]
         sample.index1 = BioPieces::Seq.new(seq: sample.index1, type: :dna).
-                 reverse.complement.seq
+          reverse.complement.seq
       end
 
       if @options[:revcomp_index2]
         sample.index2 = BioPieces::Seq.new(seq: sample.index2, type: :dna).
-                 reverse.complement.seq
+          reverse.complement.seq
       end
     end
   end
@@ -391,20 +391,30 @@ class Demultiplexer
     errors
   end
 
-  # Method that ...
+  # Method that opens the output files for writing.
   #
-  # files - Array ...
-  #
-  # Examples
-  #
-  #   files_open()
-  #   # => <Hash>
-  #
-  # Returns a Hash with sample names as keys, and a tule of file handles as
-  # values.
+  # Returns a Hash with an incrementing index as keys, and a tuple of file
+  # handles as values.
   def files_open
     file_hash = {}
     comp      = @options[:compress]
+
+    file_hash.merge!(files_open_samples(comp))
+    file_hash.merge!(files_open_undet(comp))
+
+    at_exit { file_hash.each_value { |value| value.map(&:close) } }
+
+    file_hash
+  end
+
+  # Method that opens the sample output files for writing.
+  #
+  # comp - Symbol with type of output compression.
+  #
+  # Returns a Hash with an incrementing index as keys, and a tuple of file
+  # handles as values.
+  def files_open_samples(comp)
+    file_hash = {}
 
     @samples.each_with_index do |sample, i|
       file_forward = File.join(@options[:output_dir], "#{sample.id}#{@suffix1}")
@@ -414,6 +424,17 @@ class Demultiplexer
       file_hash[i] = [io_forward, io_reverse]
     end
 
+    file_hash
+  end
+
+  # Method that opens the undertermined output files for writing.
+  #
+  # comp - Symbol with type of output compression.
+  #
+  # Returns a Hash with an incrementing index as keys, and a tuple of file
+  # handles as values.
+  def files_open_undet(comp)
+    file_hash     = {}
     @undetermined = @samples.size + 1
 
     file_forward = File.join(@options[:output_dir], "Undetermined#{@suffix1}")
@@ -422,45 +443,75 @@ class Demultiplexer
     io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
     file_hash[@undetermined] = [io_forward, io_reverse]
 
-    at_exit { file_hash.each_value { |value| value.map(&:close) } }
-
     file_hash
   end
 
-  def index_create
-    mismatches_max = @options[:mismatches_max]
+  # Method to populate the index.
+  #
+  # index_hash     - Google Hash with initialized index.
+  # mismatches_max - Integer denoting the max mismatches allowed.
+  #
+  # Returns a Google Hash.
+  def index_populate(index_hash, mismatches_max)
+    @samples.each_with_index do |sample, i|
+      index_list1 = permutate([sample.index1], mismatches_max)
+      index_list2 = permutate([sample.index2], mismatches_max)
 
-    if mismatches_max <= 1
+      index_check_list_sizes(index_list1, index_list2)
+
+      index_list1.product(index_list2).each do |index1, index2|
+        key = "#{index1}#{index2}".hash
+
+        index_check_existing(index_hash, key)
+
+        index_hash[key] = i
+      end
+    end
+
+    index_hash
+  end
+
+  # Method to initialize the index. If @options[:mismatches_max] is <= then
+  # GoogleHashSparseLongToInt is used else GoogleHashDenseLongToInt due to
+  # memory and performance.
+  #
+  # Returns a Google Hash.
+  def index_init
+    if @options[:mismatches_max] <= 1
       index_hash = GoogleHashSparseLongToInt.new
     else
       index_hash = GoogleHashDenseLongToInt.new
     end
 
-    @samples.each_with_index do |sample, i|
-      index_list1 = [sample.index1]
-      index_list2 = [sample.index2]
-
-      index_list1 = permutate(index_list1, mismatches_max)
-      index_list2 = permutate(index_list2, mismatches_max)
-
-      if index_list1.size != index_list2.size
-        fail "Permutated list sizes differ: \
-              #{index_list1.size} != #{index_list2.size}"
-      end
-
-      index_list1.product(index_list2).each do |index1, index2|
-        key = "#{index1}#{index2}".hash
-
-        if (j = index_hash[key])
-          fail "Index combo of #{index1} and #{index2} already exists for \
-                sample id: #{@samples[j].id} and #{sample.id}"
-        else
-          index_hash[key] = i
-        end
-      end
-    end
-
     index_hash
+  end
+
+  # Method to check if two index lists differ in size, if so an exception is
+  # raised.
+  #
+  # index_list1 - Array with index1
+  # index_list2 - Array with index2
+  #
+  # Returns nothing.
+  def index_check_list_sizes(index_list1, index_list2)
+    return if index_list1.size == index_list2.size
+
+    fail "Permutated list sizes differ: \
+    #{index_list1.size} != #{index_list2.size}"
+  end
+
+  # Method to check if a index key already exists in the index, and if so an
+  # exception is raised.
+  #
+  # index_hash - Google Hash with index
+  # key        - Integer from Google Hash's #hash method
+  #
+  # Returns nothing.
+  def index_check_existing(index_hash, key)
+    return unless index_hash[key]
+
+    fail "Index combo of #{index1} and #{index2} already exists for \
+         sample id: #{@samples[index_hash[key]].id} and #{sample.id}"
   end
 
   # Method that for each word in a given Array of word permutates each word a
@@ -583,8 +634,8 @@ OptionParser.new do |opts|
     options[:output_dir] = o
   end
 
-  opts.on('-c', '--compress <gzip|bzip2>', String,
-          'Compress output using gzip or bzip2 (default=<no compression>)') do |o|
+  opts.on('-c', '--compress <gzip|bzip2>', String, 'Compress output using \
+    gzip or bzip2 (default=<no compression>)') do |o|
     options[:compress] = o.to_sym
   end
 
@@ -652,3 +703,6 @@ if fastq_files.size != 4
 end
 
 Demultiplexer.run(fastq_files, options)
+
+# SampleBuilder
+# IndexBuilder
