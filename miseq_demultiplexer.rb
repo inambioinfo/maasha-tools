@@ -58,168 +58,6 @@ USAGE = <<USAGE
   Options:
 USAGE
 
-# Class containing methods for reading and checking sample information.
-class SampleReader
-  # Class method that reads sample information from a samples file, which
-  # consists of ASCII text in three tab separated columns: The first column is
-  # the sample_id, the second column is index1 and the third column is index2.
-  #
-  # If revcomp1 or revcomp2 is set then index1 and index2 are
-  # reverse-complemented accordingly.
-  #
-  # file     - String with path to sample file.
-  # revcomp1 - Flag indicating that index1 should be reverse-complemented.
-  # revcomp2 - Flag indicating that index2 should be reverse-complemented.
-  #
-  # Examples
-  #
-  #   SampleReader.read("samples.txt", false, false)
-  #   # => [<Sample>, <Sample>, <Sample> ...]
-  #
-  # Returns an Array of Sample objects.
-  def self.read(file, revcomp1, revcomp2)
-    sample_reader = new(revcomp1, revcomp2)
-    sample_reader.samples_parse(file)
-  end
-
-  # Constructor method for SampleReader object. The given revcomp1 and revcomp2
-  # flags are stored as instance variables.
-  #
-  # revcomp1 - Flag indicating that index1 should be reverse-complemented.
-  # revcomp2 - Flag indicating that index2 should be reverse-complemented.
-  #
-  # Examples
-  #
-  #   SampleReader.new(false, false)
-  #   # => <SampleReader>
-  #
-  # Returns SampleReader object.
-  def initialize(revcomp1, revcomp2)
-    @revcomp1 = revcomp1
-    @revcomp2 = revcomp2
-  end
-
-  # Method that reads sample information from a samples file, which consists
-  # of ASCII text in three tab separated columns: The first column is the
-  # sample_id, the second column is index1 and the third column is index2.
-  #
-  # file - String with path to sample file.
-  #
-  # Examples
-  #
-  #   samples_parse("samples.txt")
-  #   # => [<Sample>, <Sample>, <Sample> ...]
-  #
-  # Returns an Array of Sample objects.
-  def samples_parse(file)
-    samples = samples_read(file)
-    samples_reverse_complement(samples)
-    errors = []
-    errors.push(*samples_check_index_combo(samples))
-    errors.push(*samples_check_uniq_id(samples))
-
-    unless errors.empty?
-      pp errors
-      fail 'errors found in sample file.'
-    end
-
-    samples
-  end
-
-  # Method that reads sample information form a samples file, which consists
-  # of ASCII text in three tab separated columns: The first column is the
-  # sample_id, the second column is index1 and the third column is index2.
-  #
-  # If @options[:revcomp_index1] or @options[:revcomp_index2] is set then
-  # index1 and index2 are reverse-complemented accordingly.
-  #
-  # file - String with path to sample file.
-  #
-  # Examples
-  #
-  #   samples_read("samples.txt")
-  #   # => [<Sample>, <Sample>, <Sample> ...]
-  #
-  # Returns an Array of Sample objects.
-  def samples_read(file)
-    samples = []
-
-    CSV.read(file, col_sep: "\t").each do |id, index1, index2|
-      samples << Sample.new(id, index1, index2)
-    end
-
-    samples
-  end
-
-  # Method that iterates over the a given Array of sample Objects, and if
-  # @options[:revcomp_index1] or @options[:revcomp_index2] is set then
-  # index1 and index2 are reverse-complemented accordingly.
-  #
-  # samples - Array of Sample objects.
-  #
-  # Returns nothing.
-  def samples_reverse_complement(samples)
-    samples.each do |sample|
-      sample.index1 = index_reverse_complement(sample.index1) if @revcomp1
-      sample.index2 = index_reverse_complement(sample.index2) if @revcomp2
-    end
-  end
-
-  # Method that reverse-complements a given index sequence.
-  #
-  # index - Index String.
-  #
-  # Returns reverse-complemented index String.
-  def index_reverse_complement(index)
-    BioPieces::Seq.new(seq: index, type: :dna).reverse.complement.seq
-  end
-
-  # Method that iterates over the a given Array of sample Objects, and if
-  # the combination of index1 and index2 is non-unique an error is pushed
-  # on an error Array.
-  #
-  # samples - Array of Sample objects.
-  #
-  # Returns an Array of found errors.
-  def samples_check_index_combo(samples)
-    errors = []
-    lookup = {}
-
-    samples.each do |sample|
-      if (id2 = lookup["#{sample.index1}#{sample.index2}"])
-        errors << ['Samples with same index combo', sample.id, id2].join("\t")
-      else
-        lookup["#{sample.index1}#{sample.index2}"] = sample.id
-      end
-    end
-
-    errors
-  end
-
-  # Method that iterates over the a given Array of sample Objects, and if
-  # a sample id is non-unique an error is pushed  on an error Array.
-  #
-  # samples - Array of Sample objects.
-  #
-  # Returns an Array of found errors.
-  def samples_check_uniq_id(samples)
-    errors = []
-    lookup = Set.new
-
-    samples.each do |sample|
-      if lookup.include? sample.id
-        errors << ['Non-unique sample id', sample.id].join("\t")
-      end
-
-      lookup << sample.id
-    end
-
-    errors
-  end
-
-  Sample = Struct.new(:id, :index1, :index2)
-end
-
 # Class containing methods for demultiplexing MiSeq sequences.
 class Demultiplexer
   # Public: Class method to run demultiplexing of MiSeq sequences.
@@ -290,7 +128,7 @@ class Demultiplexer
     @undetermined = nil
     @stats        = stats_init
     @file_hash    = nil
-    @index_hash   = nil
+    @index_hash   = IndexBuilder.build(@samples, options[:mismatches_max])
   end
 
   # Method to initialize a status Hash.
@@ -321,7 +159,6 @@ class Demultiplexer
 
   def demultiplex
     @file_hash  = open_output_files
-    @index_hash = index_populate(index_init, @options[:mismatches_max])
 
     print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
     time_start = Time.now
@@ -571,16 +408,264 @@ class Demultiplexer
     file_hash
   end
 
-  # Method to populate the index.
+  # Method to save stats to the log file 'Demultiplex.log' in the output
+  # directory.
   #
-  # index_hash     - Google Hash with initialized index.
-  # mismatches_max - Integer denoting the max mismatches allowed.
+  # Returns nothing.
+  def save_log
+    @stats[:sample_id] = @samples.map(&:id)
+
+    @stats[:index1] = uniq_index1
+    @stats[:index2] = uniq_index2
+
+    File.open(File.join(@options[:output_dir], 'Demultiplex.log'), 'w') do |ios|
+      PP.pp(@stats, ios)
+    end
+  end
+
+  # Method that iterates over @samples and compiles a sorted Array with all
+  # unique index1 sequences.
+  #
+  # Returns Array with uniq index1 sequences.
+  def uniq_index1
+    @stats[:index1] = @samples.each_with_object(SortedSet.new) do |a, e|
+      a << e.index1
+    end.to_a
+  end
+
+  # Method that iterates over @samples and compiles a sorted Array with all
+  # unique index2 sequences.
+  #
+  # Returns Array with uniq index2 sequences.
+  def uniq_index2
+    @stats[:index2] = @samples.each_with_object(SortedSet.new) do |a, e|
+      a << e.index2
+    end.to_a
+  end
+end
+
+# Class containing methods for reading and checking sample information.
+class SampleReader
+  # Class method that reads sample information from a samples file, which
+  # consists of ASCII text in three tab separated columns: The first column is
+  # the sample_id, the second column is index1 and the third column is index2.
+  #
+  # If revcomp1 or revcomp2 is set then index1 and index2 are
+  # reverse-complemented accordingly.
+  #
+  # file     - String with path to sample file.
+  # revcomp1 - Flag indicating that index1 should be reverse-complemented.
+  # revcomp2 - Flag indicating that index2 should be reverse-complemented.
+  #
+  # Examples
+  #
+  #   SampleReader.read("samples.txt", false, false)
+  #   # => [<Sample>, <Sample>, <Sample> ...]
+  #
+  # Returns an Array of Sample objects.
+  def self.read(file, revcomp1, revcomp2)
+    sample_reader = new(revcomp1, revcomp2)
+    sample_reader.samples_parse(file)
+  end
+
+  # Constructor method for SampleReader object. The given revcomp1 and revcomp2
+  # flags are stored as instance variables.
+  #
+  # revcomp1 - Flag indicating that index1 should be reverse-complemented.
+  # revcomp2 - Flag indicating that index2 should be reverse-complemented.
+  #
+  # Examples
+  #
+  #   SampleReader.new(false, false)
+  #   # => <SampleReader>
+  #
+  # Returns SampleReader object.
+  def initialize(revcomp1, revcomp2)
+    @revcomp1 = revcomp1
+    @revcomp2 = revcomp2
+  end
+
+  # Method that reads sample information from a samples file, which consists
+  # of ASCII text in three tab separated columns: The first column is the
+  # sample_id, the second column is index1 and the third column is index2.
+  #
+  # file - String with path to sample file.
+  #
+  # Examples
+  #
+  #   samples_parse("samples.txt")
+  #   # => [<Sample>, <Sample>, <Sample> ...]
+  #
+  # Returns an Array of Sample objects.
+  def samples_parse(file)
+    samples = samples_read(file)
+    samples_reverse_complement(samples)
+    errors = []
+    errors.push(*samples_check_index_combo(samples))
+    errors.push(*samples_check_uniq_id(samples))
+
+    unless errors.empty?
+      pp errors
+      fail 'errors found in sample file.'
+    end
+
+    samples
+  end
+
+  # Method that reads sample information form a samples file, which consists
+  # of ASCII text in three tab separated columns: The first column is the
+  # sample_id, the second column is index1 and the third column is index2.
+  #
+  # If @options[:revcomp_index1] or @options[:revcomp_index2] is set then
+  # index1 and index2 are reverse-complemented accordingly.
+  #
+  # file - String with path to sample file.
+  #
+  # Examples
+  #
+  #   samples_read("samples.txt")
+  #   # => [<Sample>, <Sample>, <Sample> ...]
+  #
+  # Returns an Array of Sample objects.
+  def samples_read(file)
+    samples = []
+
+    CSV.read(file, col_sep: "\t").each do |id, index1, index2|
+      samples << Sample.new(id, index1, index2)
+    end
+
+    samples
+  end
+
+  # Method that iterates over the a given Array of sample Objects, and if
+  # @options[:revcomp_index1] or @options[:revcomp_index2] is set then
+  # index1 and index2 are reverse-complemented accordingly.
+  #
+  # samples - Array of Sample objects.
+  #
+  # Returns nothing.
+  def samples_reverse_complement(samples)
+    samples.each do |sample|
+      sample.index1 = index_reverse_complement(sample.index1) if @revcomp1
+      sample.index2 = index_reverse_complement(sample.index2) if @revcomp2
+    end
+  end
+
+  # Method that reverse-complements a given index sequence.
+  #
+  # index - Index String.
+  #
+  # Returns reverse-complemented index String.
+  def index_reverse_complement(index)
+    BioPieces::Seq.new(seq: index, type: :dna).reverse.complement.seq
+  end
+
+  # Method that iterates over the a given Array of sample Objects, and if
+  # the combination of index1 and index2 is non-unique an error is pushed
+  # on an error Array.
+  #
+  # samples - Array of Sample objects.
+  #
+  # Returns an Array of found errors.
+  def samples_check_index_combo(samples)
+    errors = []
+    lookup = {}
+
+    samples.each do |sample|
+      if (id2 = lookup["#{sample.index1}#{sample.index2}"])
+        errors << ['Samples with same index combo', sample.id, id2].join("\t")
+      else
+        lookup["#{sample.index1}#{sample.index2}"] = sample.id
+      end
+    end
+
+    errors
+  end
+
+  # Method that iterates over the a given Array of sample Objects, and if
+  # a sample id is non-unique an error is pushed  on an error Array.
+  #
+  # samples - Array of Sample objects.
+  #
+  # Returns an Array of found errors.
+  def samples_check_uniq_id(samples)
+    errors = []
+    lookup = Set.new
+
+    samples.each do |sample|
+      if lookup.include? sample.id
+        errors << ['Non-unique sample id', sample.id].join("\t")
+      end
+
+      lookup << sample.id
+    end
+
+    errors
+  end
+
+  Sample = Struct.new(:id, :index1, :index2)
+end
+
+# Class containing methods for building an search index.
+class IndexBuilder
+  # Class method that build a search index from a given Array of samples.
+  #
+  # samples - Array of samples (Sample objects with id, index1 and index2).
+  #
+  # Examples
+  #
+  #   IndexBuilder.build(samples)
+  #     # => <Google Hash>
+  #
+  # Returns a Google Hash where the key is the index and the value is the TODO
+  def self.build(samples, mismatches_max)
+    index_builder = new(samples, mismatches_max)
+    index_hash    = index_builder.index_init
+    index_builder.index_populate(index_hash)
+  end
+
+  # Constructor method for IndexBuilder object. The given Array of samples and
+  # mismatches_max are saved as an instance variable.
+  #
+  # samples        - Array of Sample objects.
+  # mismatches_max - Integer denoting the maximum number of misses allowed in
+  #                  an index sequence.
+  #
+  # Examples
+  #
+  #   IndexBuilder.new(samples, 2)
+  #     # => <IndexBuilder>
+  #
+  # Returns an IndexBuilder object.
+  def initialize(samples, mismatches_max)
+    @samples        = samples
+    @mismatches_max = mismatches_max
+  end
+
+  # Method to initialize the index. If @mismatches_max is <= then
+  # GoogleHashSparseLongToInt is used else GoogleHashDenseLongToInt due to
+  # memory and performance.
   #
   # Returns a Google Hash.
-  def index_populate(index_hash, mismatches_max)
+  def index_init
+    if @mismatches_max <= 1
+      index_hash = GoogleHashSparseLongToInt.new
+    else
+      index_hash = GoogleHashDenseLongToInt.new
+    end
+
+    index_hash
+  end
+
+  # Method to populate the index.
+  #
+  # index_hash - Google Hash with initialized index.
+  #
+  # Returns a Google Hash.
+  def index_populate(index_hash)
     @samples.each_with_index do |sample, i|
-      index_list1 = permutate([sample.index1], mismatches_max)
-      index_list2 = permutate([sample.index2], mismatches_max)
+      index_list1 = permutate([sample.index1], @mismatches_max)
+      index_list2 = permutate([sample.index2], @mismatches_max)
 
       # index_check_list_sizes(index_list1, index_list2)
 
@@ -591,21 +676,6 @@ class Demultiplexer
 
         index_hash[key] = i
       end
-    end
-
-    index_hash
-  end
-
-  # Method to initialize the index. If @options[:mismatches_max] is <= then
-  # GoogleHashSparseLongToInt is used else GoogleHashDenseLongToInt due to
-  # memory and performance.
-  #
-  # Returns a Google Hash.
-  def index_init
-    if @options[:mismatches_max] <= 1
-      index_hash = GoogleHashSparseLongToInt.new
-    else
-      index_hash = GoogleHashDenseLongToInt.new
     end
 
     index_hash
@@ -690,41 +760,6 @@ class Demultiplexer
     end
 
     new_words
-  end
-
-  # Method to save stats to the log file 'Demultiplex.log' in the output
-  # directory.
-  #
-  # Returns nothing.
-  def save_log
-    @stats[:sample_id] = @samples.map(&:id)
-
-    @stats[:index1] = uniq_index1
-    @stats[:index2] = uniq_index2
-
-    File.open(File.join(@options[:output_dir], 'Demultiplex.log'), 'w') do |ios|
-      PP.pp(@stats, ios)
-    end
-  end
-
-  # Method that iterates over @samples and compiles a sorted Array with all
-  # unique index1 sequences.
-  #
-  # Returns Array with uniq index1 sequences.
-  def uniq_index1
-    @stats[:index1] = @samples.each_with_object(SortedSet.new) do |a, e|
-      a << e.index1
-    end.to_a
-  end
-
-  # Method that iterates over @samples and compiles a sorted Array with all
-  # unique index2 sequences.
-  #
-  # Returns Array with uniq index2 sequences.
-  def uniq_index2
-    @stats[:index2] = @samples.each_with_object(SortedSet.new) do |a, e|
-      a << e.index2
-    end.to_a
   end
 end
 
@@ -846,6 +881,4 @@ end
 
 Demultiplexer.run(fastq_files, options)
 
-# SampleReader
-# IndexBuilder
 # DataReader
