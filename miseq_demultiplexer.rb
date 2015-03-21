@@ -3,13 +3,14 @@
 require 'biopieces'
 require 'optparse'
 require 'csv'
+require 'set'
 require 'google_hash'
 
 USAGE = <<USAGE
   This program demultiplexes Illumina Paired data given a samples file and four
   FASTQ files containing forward and reverse index data and forward and reverse
   read data.
-  
+
   The samples file consists of three tab-separated columns: sample_id, forward
   index, reverse inded).
 
@@ -17,16 +18,16 @@ USAGE = <<USAGE
   following key:
 
     <add key="CreateFastqForIndexReads" value="1">
-  
+
   To the `MiSeq Reporter.exe.config` file located in the `MiSeq Reporter`
   installation folder, `C:\\Illumina\\MiSeqReporter` and restarting the
   `MiSeq Reporter` service. See the MiSeq Reporter User Guide page 29:
-  
+
   http://support.illumina.com/downloads/miseq_reporter_user_guide_15042295.html
 
   Thus Basecalling using a SampleSheet.csv containing a single entry `Data` with
   no index information will generate the following files:
-  
+
     Data_S1_L001_I1_001.fastq.gz
     Data_S1_L001_I2_001.fastq.gz
     Data_S1_L001_R1_001.fastq.gz
@@ -38,12 +39,12 @@ USAGE = <<USAGE
 
   Demultiplexing will generate file pairs according to the sample information
   in the samples file and input file suffix, one pair per sample, and these
-  will be output to the output directory. Also a file pair with undetermined 
+  will be output to the output directory. Also a file pair with undetermined
   reads are created where the index sequence is appended to the sequence name.
-  
+
   It is possible to allow up to three mismatches per index. Also, read pairs are
   filtered if either of the indexes have a mean quality score below a given
-  threshold or any single position in the index have a quality score below a 
+  threshold or any single position in the index have a quality score below a
   given theshold.
 
   Finally, a log file `Demultiplex.log` is output containing the stats of the
@@ -57,177 +58,93 @@ USAGE = <<USAGE
   Options:
 USAGE
 
+# Class containing methods for demultiplexing MiSeq sequences.
 class Demultiplexer
+  # Public: Class method to run demultiplexing of MiSeq sequences.
+  #
+  # fastq_files - Array with paths to FASTQ files.
+  # options     - Options Hash.
+  #               :verbose        - Verbose flag (default: false).
+  #               :mismatches_max - Integer value indicating max mismatches
+  #                                 (default: 0).
+  #               :samples_file   - String with path to samples file.
+  #               :revcomp_index1 - Flag indicating that index1 should be
+  #                                 reverse-complemented (default: false).
+  #               :revcomp_index2 - Flag indicating that index2 should be
+  #                                 reverse-complemented (default: false).
+  #               :output_dir     - String with output directory (optional).
+  #               :scores_min     - An Integer representing the Phred score
+  #                                 minimum, such that a reads is dropped if a
+  #                                 single position in the index contain a
+  #                                 score below this value (default: 16).
+  #               :scores_mean=>  - An Integer representing the mean Phread
+  #                                 score, such that a read is dropped if the
+  #                                 mean quality score is below this value
+  #                                 (default: 16).
+  #
+  # Examples
+  #
+  #   Demultiplexer.run(['I1.fq', 'I2.fq', 'R1.fq', 'R2.fq'], \
+  #     samples_file: 'samples.txt')
+  #   # => <Demultiplexer>
+  #
+  # Returns Demultiplexer object
   def self.run(fastq_files, options)
-    d = self.new(fastq_files, options)
+    d = new(fastq_files, options)
     d.demultiplex
   end
 
+  # Constructor method for Demultiplexer object.
+  #
+  # fastq_files - Array with paths to FASTQ files.
+  # options     - Options Hash (default: {}).
+  #               :verbose        - Verbose flag (default: false).
+  #               :mismatches_max - Integer value indicating max mismatches
+  #                                 (default: 0).
+  #               :samples_file   - String with path to samples file.
+  #               :revcomp_index1 - Flag indicating that index1 should be
+  #                                 reverse-complemented (default: false).
+  #               :revcomp_index2 - Flag indicating that index2 should be
+  #                                 reverse-complemented (default: false).
+  #               :output_dir     - String with output directory (optional).
+  #               :scores_min     - An Integer representing the Phred score
+  #                                 minimum, such that a reads is dropped if a
+  #                                 single position in the index contain a
+  #                                 score below this value (default: 16).
+  #               :scores_mean=>  - An Integer representing the mean Phread
+  #                                 score, such that a read is dropped if the
+  #                                 mean quality score is below this value
+  #                                 (default: 16).
+  #
+  # Returns Demultiplexer object
   def initialize(fastq_files = [], options = {})
     @fastq_files  = fastq_files
     @options      = options
-    @index1_file  = nil
-    @index2_file  = nil
-    @read1_file   = nil
-    @read2_file   = nil
-    @suffix1      = nil
-    @suffix2      = nil
-    @samples      = nil
+    @suffix1      = extract_slr(@fastq_files.grep(/_R1_/).first)
+    @suffix2      = extract_slr(@fastq_files.grep(/_R2_/).first)
+    @samples      = samples_parse
     @undetermined = nil
-    @stats        = nil
+    @stats        = stats_init
     @file_hash    = nil
     @index_hash   = nil
   end
 
-  def suffix_extract(file)
-    if file =~ /.+(_S\d_L\d{3}_R[12]_\d{3}).+$/
-      suffix = $1
-    else
-      raise RuntimeError, "Unable to parse file suffix from: #{file}"
-    end
-
-    case @options[:compress]
-    when /gzip/
-      suffix << ".fastq.gz"
-    when /bzip2/
-      suffix << ".fastq.bz2"
-    else
-      suffix << ".fastq"
-    end
-
-    suffix
-  end
-
-  def samples_parse
-    @samples = []
-
-    CSV.read(@options[:samples_file], col_sep: "\t").each do |id, index1, index2|
-      if @options[:revcomp_index1]
-        index1 = BioPieces::Seq.new(seq: index1, type: :dna).reverse.complement.seq
-      end
-
-      if @options[:revcomp_index2]
-        index2 = BioPieces::Seq.new(seq: index2, type: :dna).reverse.complement.seq
-      end
-
-      @samples << Sample.new(id, index1, index2)
-    end
-
-    errors       = []
-    lookup_index = {}
-    lookup_id    = {}
-
-    @samples.each do |sample|
-      if id2 = lookup_index["#{sample.index1}#{sample.index2}"]
-        errors << ["Samples with same index combination", sample.id, id2].join("\t")
-      else
-        lookup_index["#{sample.index1}#{sample.index2}"] = sample.id
-      end
-
-      if lookup_id[sample.id]
-        errors << ["Non-unique sample id", sample.id].join("\t")
-      end
-
-      lookup_id[sample.id] = true
-    end
-
-    unless errors.empty?
-      pp errors
-      raise "errors found in sample file."
-    end
-
-    @samples
-  end
-
-  def files_open
-    file_hash  = {}
-
-    @samples.each_with_index do |sample, i|
-      file_forward = "#{sample.id}#{@suffix1}"
-      file_reverse = "#{sample.id}#{@suffix2}"
-      io_forward   = BioPieces::Fastq.open(File.join(@options[:output_dir], file_forward), 'w', compress: @options[:compress])
-      io_reverse   = BioPieces::Fastq.open(File.join(@options[:output_dir], file_reverse), 'w', compress: @options[:compress])
-      file_hash[i] = [io_forward, io_reverse]
-    end
-
-    @undetermined = @samples.size + 1
-
-    file_forward             = "Undetermined#{@suffix1}"
-    file_reverse             = "Undetermined#{@suffix2}"
-    io_forward               = BioPieces::Fastq.open(File.join(@options[:output_dir], file_forward), 'w', compress: @options[:compress])
-    io_reverse               = BioPieces::Fastq.open(File.join(@options[:output_dir], file_reverse), 'w', compress: @options[:compress])
-    file_hash[@undetermined] = [io_forward, io_reverse]
-
-    at_exit { file_hash.each_value { |value| value[0].close; value[1].close } }
-
-    file_hash
-  end
-
-  def index_create
-    index_hash = (@options[:mismatches_max] <= 1) ? GoogleHashSparseLongToInt.new : GoogleHashDenseLongToInt.new
-
-    @samples.each_with_index do |sample, i|
-      index_list1 = [sample.index1]
-      index_list2 = [sample.index2]
-
-      index_list1 = permutate(index_list1, permutations: @options[:mismatches_max])
-      index_list2 = permutate(index_list2, permutations: @options[:mismatches_max])
-
-      raise "Permutated list sizes differ: #{index_list1.size} != #{index_list2.size}" if index_list1.size != index_list2.size
-
-      index_list1.product(index_list2).each do |index1, index2|
-        key = hash_index("#{index1}#{index2}")
-
-        if j = index_hash[key]
-          raise "Index combo of #{index1} and #{index2} already exists for sample id: #{@samples[j].id} and #{sample.id}"
-        else
-          index_hash[key] = i
-        end
-      end
-    end
-
-    index_hash
-  end
-
-  def permutate(list, options = {})
-    permutations = options[:permutations] || 2
-    alphabet     = options[:alphabet]     || "ATCG"
-
-    permutations.times do
-      hash = list.inject({}) { |memo, obj| memo[obj.to_sym] = true; memo }
-
-      list.each do |word|
-        (0 ... word.size).each do |pos|
-          alphabet.each_char do |char|
-            new_word = "#{word[0 ... pos]}#{char}#{word[pos + 1 .. -1]}"
-
-            hash[new_word.to_sym] = true
-          end
-        end
-      end
-
-      list = hash.keys.map { |k| k.to_s }
-    end
-
-    list
-  end
-
-  def hash_index(index)
-    index.tr("ATCG", "0123").to_i
-  end
-
-  def demultiplex
-    @index1_file = @fastq_files.grep(/_I1_/).first
-    @index2_file = @fastq_files.grep(/_I2_/).first
-    @read1_file  = @fastq_files.grep(/_R1_/).first
-    @read2_file  = @fastq_files.grep(/_R2_/).first
-    @suffix1     = suffix_extract(@read1_file)
-    @suffix2     = suffix_extract(@read2_file)
-    @samples     = samples_parse
-    @file_hash   = files_open
-    @index_hash  = index_create
-
-    @stats = {
+  # Method to initialize a status Hash.
+  #
+  # Examples
+  #
+  #   extract_slr
+  #   # => {:count=>0,
+  #         :match=>0,
+  #         :undetermined=>0,
+  #         :index1_bad_mean=>0,
+  #         :index2_bad_mean=>0,
+  #         :index1_bad_min=>0,
+  #         :index2_bad_min=>0}
+  #
+  # Returns a Hash.
+  def stats_init
+    {
       count:           0,
       match:           0,
       undetermined:    0,
@@ -236,21 +153,29 @@ class Demultiplexer
       index1_bad_min:  0,
       index2_bad_min:  0
     }
+  end
+
+  def demultiplex
+    @file_hash  = files_open
+    @index_hash = index_create
 
     time_start = Time.now
 
     begin
-      i1_io = BioPieces::Fastq.open(@index1_file)
-      i2_io = BioPieces::Fastq.open(@index2_file)
-      r1_io = BioPieces::Fastq.open(@read1_file)
-      r2_io = BioPieces::Fastq.open(@read2_file)
+      i1_io = BioPieces::Fastq.open(@fastq_files.grep(/_I1_/).first)
+      i2_io = BioPieces::Fastq.open(@fastq_files.grep(/_I2_/).first)
+      r1_io = BioPieces::Fastq.open(@fastq_files.grep(/_R1_/).first)
+      r2_io = BioPieces::Fastq.open(@fastq_files.grep(/_R2_/).first)
 
       print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
 
-      while i1 = i1_io.get_entry and i2 = i2_io.get_entry and r1 = r1_io.get_entry and r2 = r2_io.get_entry
+      while (i1 = i1_io.next_entry) &&
+            (i2 = i2_io.next_entry) &&
+            (r1 = r1_io.next_entry) &&
+            (r2 = r2_io.next_entry)
         found = false
 
-        if sample_id = @index_hash[hash_index("#{i1.seq}#{i2.seq}")]
+        if (sample_id = @index_hash["#{i1.seq}#{i2.seq}".hash])
           @stats[:match] += 2
           found = true
           io_forward, io_reverse = @file_hash[sample_id]
@@ -265,8 +190,8 @@ class Demultiplexer
         end
 
         unless found
-          r1.seq_name = "#{r1.seq_name} #{i1.seq}" 
-          r2.seq_name = "#{r2.seq_name} #{i2.seq}" 
+          r1.seq_name = "#{r1.seq_name} #{i1.seq}"
+          r2.seq_name = "#{r2.seq_name} #{i2.seq}"
           io_forward, io_reverse = @file_hash[@undetermined]
           @stats[:undetermined] += 2
         end
@@ -276,10 +201,13 @@ class Demultiplexer
 
         @stats[:count] += 2
 
-        if @options[:verbose] and (@stats[:count] % 1_000) == 0
+        if @options[:verbose] && (@stats[:count] % 1_000) == 0
           print "\e[1;1H"    # Console code to move cursor to 1,1 coordinate.
-          @stats[:undetermined_percent] = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
-          @stats[:time]  = (Time.mktime(0) + (Time.now - time_start)).strftime("%H:%M:%S")
+
+          percent = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
+          time = (Time.mktime(0) + (Time.now - time_start)).strftime('%H:%M:%S')
+          @stats[:undetermined_percent] = percent
+          @stats[:time] = time
           pp @stats
         end
 
@@ -297,69 +225,370 @@ class Demultiplexer
     save_log
   end
 
-  def save_log
-    @stats[:sample_id] = @samples.map { |sample| sample.id }
-    @stats[:index1]    = @samples.inject({}) { |memo, obj| memo[obj.index1] = true; memo}.keys.sort
-    @stats[:index2]    = @samples.inject({}) { |memo, obj| memo[obj.index2] = true; memo}.keys.sort
+  private
 
-    File.open(File.join(@options[:output_dir], "Demultiplex.log"), 'w') do |ios|
+  # Method that extracts the Sample, Lane, Region information from a given file.
+  #
+  # file - String with file name.
+  #
+  # Examples
+  #
+  #   extract_slr("Sample1_S1_L001_R1_001.fastq.gz")
+  #   # => "_S1_L001_R1_001"
+  #
+  # Returns String with SLR info.
+  def extract_slr(file)
+    if file =~ /.+(_S\d_L\d{3}_R[12]_\d{3}).+$/
+      slr = Regexp.last_match(1)
+    else
+      fail "Unable to parse file SLR from: #{file}"
+    end
+
+    append_slr(slr)
+  end
+
+  # Method that appends a file suffix to a given Sample, Lane, Region
+  # information String based on the @options[:compress] option. The
+  # file suffix can be either ".fastq.gz", ".fastq.bz2", or ".fastq".
+  #
+  # slr - String Sample, Lane, Region information.
+  #
+  # Examples
+  #
+  #   append_slr("_S1_L001_R1_001")
+  #   # => "_S1_L001_R1_001.fastq.gz"
+  #
+  # Returns String with SLR info and file suffix.
+  def append_slr(slr)
+    case @options[:compress]
+    when /gzip/
+      slr << '.fastq.gz'
+    when /bzip2/
+      slr << '.fastq.bz2'
+    else
+      slr << '.fastq'
+    end
+
+    slr
+  end
+
+  # Method that reads sample information form a samples file, which consists
+  # of ASCII text in three tab separated columns: The first column is the
+  # sample_id, the second column is index1 and the third column is index2.
+  #
+  # If @options[:revcomp_index1] or @options[:revcomp_index2] is set then
+  # index1 and index2 are reverse-complemented accordingly.
+  #
+  # file - String with path to sample file.
+  #
+  # Examples
+  #
+  #   samples_read("samples.txt")
+  #   # => [<Sample>, <Sample>, <Sample> ...]
+  #
+  # Returns an Array of Sample objects.
+  def samples_parse
+    samples = samples_read(@options[:samples_file])
+    samples_reverse_complement(samples)
+    errors = []
+    errors.push(*samples_check_index_combo(samples))
+    errors.push(*samples_check_uniq_id(samples))
+
+    unless errors.empty?
+      pp errors
+      fail 'errors found in sample file.'
+    end
+
+    samples
+  end
+
+  # Method that reads sample information form a samples file, which consists
+  # of ASCII text in three tab separated columns: The first column is the
+  # sample_id, the second column is index1 and the third column is index2.
+  #
+  # If @options[:revcomp_index1] or @options[:revcomp_index2] is set then
+  # index1 and index2 are reverse-complemented accordingly.
+  #
+  # file - String with path to sample file.
+  #
+  # Examples
+  #
+  #   samples_read("samples.txt")
+  #   # => [<Sample>, <Sample>, <Sample> ...]
+  #
+  # Returns an Array of Sample objects.
+  def samples_read(file)
+    samples = []
+
+    CSV.read(file, col_sep: "\t").each do |id, index1, index2|
+      samples << Sample.new(id, index1, index2)
+    end
+
+    samples
+  end
+
+  # Method that iterates over the a given Array of sample Objects, and if
+  # @options[:revcomp_index1] or @options[:revcomp_index2] is set then
+  # index1 and index2 are reverse-complemented accordingly.
+  #
+  # samples - Array of Sample objects.
+  #
+  # Returns nothing.
+  def samples_reverse_complement(samples)
+    samples.each do |sample|
+      if @options[:revcomp_index1]
+        sample.index1 = BioPieces::Seq.new(seq: sample.index1, type: :dna).
+                 reverse.complement.seq
+      end
+
+      if @options[:revcomp_index2]
+        sample.index2 = BioPieces::Seq.new(seq: sample.index2, type: :dna).
+                 reverse.complement.seq
+      end
+    end
+  end
+
+  # Method that iterates over the a given Array of sample Objects, and if
+  # the combination of index1 and index2 is non-unique an error is pushed
+  # on an error Array.
+  #
+  # samples - Array of Sample objects.
+  #
+  # Returns an Array of found errors.
+  def samples_check_index_combo(samples)
+    errors = []
+    lookup = {}
+
+    samples.each do |sample|
+      if (id2 = lookup["#{sample.index1}#{sample.index2}"])
+        errors << ['Samples with same index combo', sample.id, id2].join("\t")
+      else
+        lookup["#{sample.index1}#{sample.index2}"] = sample.id
+      end
+    end
+
+    errors
+  end
+
+  # Method that iterates over the a given Array of sample Objects, and if
+  # a sample id is non-unique an error is pushed  on an error Array.
+  #
+  # samples - Array of Sample objects.
+  #
+  # Returns an Array of found errors.
+  def samples_check_uniq_id(samples)
+    errors = []
+    lookup = Set.new
+
+    samples.each do |sample|
+      if lookup.include? sample.id
+        errors << ['Non-unique sample id', sample.id].join("\t")
+      end
+
+      lookup << sample.id
+    end
+
+    errors
+  end
+
+  # Method that ...
+  #
+  # files - Array ...
+  #
+  # Examples
+  #
+  #   files_open()
+  #   # => <Hash>
+  #
+  # Returns a Hash with sample names as keys, and a tule of file handles as
+  # values.
+  def files_open
+    file_hash = {}
+    comp      = @options[:compress]
+
+    @samples.each_with_index do |sample, i|
+      file_forward = File.join(@options[:output_dir], "#{sample.id}#{@suffix1}")
+      file_reverse = File.join(@options[:output_dir], "#{sample.id}#{@suffix2}")
+      io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
+      io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
+      file_hash[i] = [io_forward, io_reverse]
+    end
+
+    @undetermined = @samples.size + 1
+
+    file_forward = File.join(@options[:output_dir], "Undetermined#{@suffix1}")
+    file_reverse = File.join(@options[:output_dir], "Undetermined#{@suffix2}")
+    io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
+    io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
+    file_hash[@undetermined] = [io_forward, io_reverse]
+
+    at_exit { file_hash.each_value { |value| value.map(&:close) } }
+
+    file_hash
+  end
+
+  def index_create
+    mismatches_max = @options[:mismatches_max]
+
+    if mismatches_max <= 1
+      index_hash = GoogleHashSparseLongToInt.new
+    else
+      index_hash = GoogleHashDenseLongToInt.new
+    end
+
+    @samples.each_with_index do |sample, i|
+      index_list1 = [sample.index1]
+      index_list2 = [sample.index2]
+
+      index_list1 = permutate(index_list1, mismatches_max)
+      index_list2 = permutate(index_list2, mismatches_max)
+
+      if index_list1.size != index_list2.size
+        fail "Permutated list sizes differ: \
+              #{index_list1.size} != #{index_list2.size}"
+      end
+
+      index_list1.product(index_list2).each do |index1, index2|
+        key = "#{index1}#{index2}".hash
+
+        if (j = index_hash[key])
+          fail "Index combo of #{index1} and #{index2} already exists for \
+                sample id: #{@samples[j].id} and #{sample.id}"
+        else
+          index_hash[key] = i
+        end
+      end
+    end
+
+    index_hash
+  end
+
+  # Method that for each word in a given Array of word permutates each word a
+  # given number (permuate) of times using a given alphabet, such that an Array
+  # of words with all possible combinations is returned.
+  #
+  # list     - Array of words (Strings) to permutate.
+  # permuate - Number of permutations (Integer).
+  # alphabet - String with alphabet used for permutation.
+  #
+  # Examples
+  #
+  #   permutate(["AA"], 1, "ATCG")
+  #   # => ["AA", "TA", "CA", "GA", "AA", "AT", "AC, "AG"]
+  #
+  # Returns an Array with permutated words (Strings).
+  def permutate(list, permutations = 2, alphabet = 'ATCG')
+    permutations.times do
+      set = list.each_with_object(Set.new) { |e, a| a.add(e.to_sym) }
+
+      list.each do |word|
+        new_words = permutate_word(word, alphabet)
+        new_words.map { |new_word| set.add(new_word.to_sym) }
+      end
+
+      list = set.map(&:to_s)
+    end
+
+    list
+  end
+
+  # Method that permutates a given word using a given alphabet, such that an
+  # Array of words with all possible combinations is returned.
+  #
+  # word     - String with word to permutate.
+  # alphabet - String with alphabet used for permutation.
+  #
+  # Examples
+  #
+  #   permutate("AA", "ATCG")
+  #   # => ["AA", "TA", "CA", "GA", "AA", "AT", "AC, "AG"]
+  #
+  # Returns an Array with permutated words (Strings).
+  def permutate_word(word, alphabet)
+    new_words = []
+
+    (0...word.size).each do |pos|
+      alphabet.each_char do |char|
+        new_words << "#{word[0...pos]}#{char}#{word[pos + 1..-1]}"
+      end
+    end
+
+    new_words
+  end
+
+  def save_log
+    @stats[:sample_id] = @samples.map(&:id)
+
+    @stats[:index1] = @samples.each_with_object({}) do |a, e|
+      a[e.index1] = true
+    end.keys.sort
+
+    @stats[:index2] = @samples.each_with_object({}) do |a, e|
+      a[e.index2] = true
+    end.keys.sort
+
+    File.open(File.join(@options[:output_dir], 'Demultiplex.log'), 'w') do |ios|
       PP.pp(@stats, ios)
     end
   end
 
-  Sample = Struct.new :id, :index1, :index2 do
-  end
+  Sample = Struct.new(:id, :index1, :index2)
 end
 
 DEFAULT_SCORE_MIN  = 16
 DEFAULT_SCORE_MEAN = 16
 DEFAULT_MISMATCHES = 1
 
-ARGV << "-h" if ARGV.empty?
+ARGV << '-h' if ARGV.empty?
 
 options = {}
 
 OptionParser.new do |opts|
   opts.banner = USAGE
 
-  opts.on("-h", "--help", "Display this screen" ) do
+  opts.on('-h', '--help', 'Display this screen') do
     $stderr.puts opts
     exit
   end
 
-  opts.on("-s", "--samples_file <file>", String, "Path to samples file") do |o|
+  opts.on('-s', '--samples_file <file>', String, 'Path to samples file') do |o|
     options[:samples_file] = o
   end
 
-  opts.on("-m", "--mismatches_max <uint>", Integer, "Maximum mismatches_max allowed (default=#{DEFAULT_MISMATCHES})") do |o|
+  opts.on('-m', '--mismatches_max <uint>', Integer, "Maximum mismatches_max \
+    allowed (default=#{DEFAULT_MISMATCHES})") do |o|
     options[:mismatches_max] = o
   end
 
-  opts.on("--revcomp_index1", "Reverse complement index1") do |o|
+  opts.on('--revcomp_index1', 'Reverse complement index1') do |o|
     options[:revcomp_index1] = o
   end
 
-  opts.on("--revcomp_index2", "Reverse complement index2") do |o|
+  opts.on('--revcomp_index2', 'Reverse complement index2') do |o|
     options[:revcomp_index2] = o
   end
 
-  opts.on("--scores_min <uint>", Integer, "Drop reads if a single position in the index have a quality score below scores_min (default=#{DEFAULT_SCORE_MIN})") do |o|
+  opts.on('--scores_min <uint>', Integer, "Drop reads if a single position in \
+    the index have a quality score below scores_min \
+    (default=#{DEFAULT_SCORE_MIN})") do |o|
     options[:scores_min] = o
   end
 
-  opts.on("--scores_mean <uint>", Integer, "Drop reads if the mean index quality score is below scores_mean (default=#{DEFAULT_SCORE_MEAN})") do |o|
+  opts.on('--scores_mean <uint>', Integer, "Drop reads if the mean index \
+    quality score is below scores_mean (default=#{DEFAULT_SCORE_MEAN})") do |o|
     options[:scores_mean] = o
   end
 
-  opts.on("-o", "--output_dir <dir>", String, "Output directory") do |o|
+  opts.on('-o', '--output_dir <dir>', String, 'Output directory') do |o|
     options[:output_dir] = o
   end
 
-  opts.on("-c", "--compress <gzip|bzip2>", String, "Compress output using gzip or bzip2 (default=<no compression>)") do |o|
+  opts.on('-c', '--compress <gzip|bzip2>', String,
+          'Compress output using gzip or bzip2 (default=<no compression>)') do |o|
     options[:compress] = o.to_sym
   end
 
-  opts.on("-v", "--verbose", "Verbose output") do |o|
+  opts.on('-v', '--verbose', 'Verbose output') do |o|
     options[:verbose] = o
   end
 end.parse!
@@ -371,23 +600,55 @@ options[:output_dir]     ||= Dir.pwd
 
 Dir.mkdir options[:output_dir] unless File.directory? options[:output_dir]
 
-raise OptionParser::MissingArgument, "No samples_file specified."                                    unless options[:samples_file]
-raise OptionParser::InvalidArgument, "No such file: #{options[:samples_file]}"                       unless File.file? options[:samples_file]
-raise OptionParser::InvalidArgument, "mismatches_max must be >= 0 - not #{options[:mismatches_max]}" unless options[:mismatches_max] >= 0
-raise OptionParser::InvalidArgument, "mismatches_max must be <= 3 - not #{options[:mismatches_max]}" unless options[:mismatches_max] <= 3
-raise OptionParser::InvalidArgument, "scores_min must be >= 0 - not #{options[:scores_min]}"         unless options[:scores_min]     >= 0
-raise OptionParser::InvalidArgument, "scores_min must be <= 40 - not #{options[:scores_min]}"        unless options[:scores_min]     <= 40
-raise OptionParser::InvalidArgument, "scores_mean must be >= 0 - not #{options[:scores_mean]}"       unless options[:scores_mean]    >= 0
-raise OptionParser::InvalidArgument, "scores_mean must be <= 40 - not #{options[:scores_mean]}"      unless options[:scores_mean]    <= 40
+unless options[:samples_file]
+  fail OptionParser::MissingArgument, 'No samples_file specified.'
+end
+
+unless File.file? options[:samples_file]
+  fail OptionParser::InvalidArgument, "No such file: #{options[:samples_file]}"
+end
+
+unless options[:mismatches_max] >= 0
+  fail OptionParser::InvalidArgument,
+       "mismatches_max must be >= 0 - not #{options[:mismatches_max]}"
+end
+
+unless options[:mismatches_max] <= 3
+  fail OptionParser::InvalidArgument,
+       "mismatches_max must be <= 3 - not #{options[:mismatches_max]}"
+end
+
+unless options[:scores_min] >= 0
+  fail OptionParser::InvalidArgument,
+       "scores_min must be >= 0 - not #{options[:scores_min]}"
+end
+
+unless options[:scores_min] <= 40
+  fail OptionParser::InvalidArgument,
+       "scores_min must be <= 40 - not #{options[:scores_min]}"
+end
+
+unless options[:scores_mean] >= 0
+  fail OptionParser::InvalidArgument,
+       "scores_mean must be >= 0 - not #{options[:scores_mean]}"
+end
+
+unless options[:scores_mean] <= 40
+  fail OptionParser::InvalidArgument,
+       "scores_mean must be <= 40 - not #{options[:scores_mean]}"
+end
 
 if options[:compress]
   unless options[:compress] =~ /^gzip|bzip2$/
-    raise OptionParser::InvalidArgument, "Bad argument to --compress: #{options[:compress]}"
+    fail OptionParser::InvalidArgument,
+         "Bad argument to --compress: #{options[:compress]}"
   end
 end
 
 fastq_files = ARGV.dup
 
-raise ArgumentError, "Expected 4 input files - not #{fastq_files.size}" if fastq_files.size != 4
+if fastq_files.size != 4
+  fail ArgumentError, "Expected 4 input files - not #{fastq_files.size}"
+end
 
 Demultiplexer.run(fastq_files, options)
