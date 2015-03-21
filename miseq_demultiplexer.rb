@@ -90,14 +90,14 @@ class Demultiplexer
   #
   # Returns Demultiplexer object
   def self.run(fastq_files, options)
-    d = new(fastq_files, options)
-    d.demultiplex
+    new(fastq_files, options).demultiplex
+    save_log
   end
 
   # Constructor method for Demultiplexer object.
   #
   # fastq_files - Array with paths to FASTQ files.
-  # options     - Options Hash (default: {}).
+  # options     - Options Hash.
   #               :verbose        - Verbose flag (default: false).
   #               :mismatches_max - Integer value indicating max mismatches
   #                                 (default: 0).
@@ -117,18 +117,15 @@ class Demultiplexer
   #                                 (default: 16).
   #
   # Returns Demultiplexer object
-  def initialize(fastq_files = [], options = {})
-    @fastq_files  = fastq_files
-    @options      = options
-    @suffix1      = extract_slr(@fastq_files.grep(/_R1_/).first)
-    @suffix2      = extract_slr(@fastq_files.grep(/_R2_/).first)
-    @samples      = SampleReader.read(options[:samples_file],
-                                      options[:revcomp_index1],
-                                      options[:revcomp_index2])
-    @undetermined = nil
-    @stats        = stats_init
-    @file_hash    = nil
-    @index_hash   = IndexBuilder.build(@samples, options[:mismatches_max])
+  def initialize(fastq_files, options)
+    @options    = options
+    @samples    = SampleReader.read(options[:samples_file],
+                                    options[:revcomp_index1],
+                                    options[:revcomp_index2])
+    @index_hash = IndexBuilder.build(@samples, options[:mismatches_max])
+    @data_io    = DataIO.new(@samples, fastq_files, options[:compress],
+                             options[:output_dir])
+    @stats      = stats_init
   end
 
   # Method to initialize a status Hash.
@@ -158,53 +155,39 @@ class Demultiplexer
   end
 
   def demultiplex
-    @file_hash  = open_output_files
-
     print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
     time_start = Time.now
 
-    begin
-      i1_io, i2_io, r1_io, r2_io = open_input_files(identify_input_files)
+    @data_io.open_input_files do |ios_in|
+      @data_io.open_output_files do |ios_out|
+        ios_in.each do |i1, i2, r1, r2|
+          next unless index_qual_ok?(i1, i2)
 
-      while (i1 = i1_io.next_entry) &&
-            (i2 = i2_io.next_entry) &&
-            (r1 = r1_io.next_entry) &&
-            (r2 = r2_io.next_entry)
-        found = false
+          if (sample_id = @index_hash["#{i1.seq}#{i2.seq}".hash])
+            @stats[:match] += 2
+            io_forward, io_reverse = ios_out[sample_id]
+          else
+            r1.seq_name = "#{r1.seq_name} #{i1.seq}"
+            r2.seq_name = "#{r2.seq_name} #{i2.seq}"
+            io_forward, io_reverse = ios_out[@undetermined]
+            @stats[:undetermined] += 2
+          end
 
-        next unless index_qual_ok?(i1, i2)
+          io_forward.puts r1.to_fastq
+          io_reverse.puts r2.to_fastq
 
-        if (sample_id = @index_hash["#{i1.seq}#{i2.seq}".hash])
-          @stats[:match] += 2
-          found = true
-          io_forward, io_reverse = @file_hash[sample_id]
+          @stats[:count] += 2
+
+          if @options[:verbose] && (@stats[:count] % 1_000) == 0
+            print_stats(Time.now - time_start)
+          end
+
+          # break if @stats[:count] == 100_000
         end
-
-        unless found
-          r1.seq_name = "#{r1.seq_name} #{i1.seq}"
-          r2.seq_name = "#{r2.seq_name} #{i2.seq}"
-          io_forward, io_reverse = @file_hash[@undetermined]
-          @stats[:undetermined] += 2
-        end
-
-        io_forward.puts r1.to_fastq
-        io_reverse.puts r2.to_fastq
-
-        @stats[:count] += 2
-
-        if @options[:verbose] && (@stats[:count] % 1_000) == 0
-          print_stats(Time.now - time_start)
-        end
-
-        # break if @stats[:count] == 100_000
       end
-    ensure
-      [i1_io, i2_io, r1_io, r2_io].map(&:close)
     end
 
     pp @stats if @options[:verbose]
-
-    save_log
   end
 
   private
@@ -277,135 +260,6 @@ class Demultiplexer
     @stats[:time] = time
 
     pp @stats
-  end
-
-  # Method that extracts the Sample, Lane, Region information from a given file.
-  #
-  # file - String with file name.
-  #
-  # Examples
-  #
-  #   extract_slr("Sample1_S1_L001_R1_001.fastq.gz")
-  #   # => "_S1_L001_R1_001"
-  #
-  # Returns String with SLR info.
-  def extract_slr(file)
-    if file =~ /.+(_S\d_L\d{3}_R[12]_\d{3}).+$/
-      slr = Regexp.last_match(1)
-    else
-      fail "Unable to parse file SLR from: #{file}"
-    end
-
-    append_slr(slr)
-  end
-
-  # Method that appends a file suffix to a given Sample, Lane, Region
-  # information String based on the @options[:compress] option. The
-  # file suffix can be either ".fastq.gz", ".fastq.bz2", or ".fastq".
-  #
-  # slr - String Sample, Lane, Region information.
-  #
-  # Examples
-  #
-  #   append_slr("_S1_L001_R1_001")
-  #   # => "_S1_L001_R1_001.fastq.gz"
-  #
-  # Returns String with SLR info and file suffix.
-  def append_slr(slr)
-    case @options[:compress]
-    when /gzip/
-      slr << '.fastq.gz'
-    when /bzip2/
-      slr << '.fastq.bz2'
-    else
-      slr << '.fastq'
-    end
-
-    slr
-  end
-
-  # Method identify the different input files.
-  #
-  # Returns an Array with input files (Strings).
-  def identify_input_files
-    input_files = []
-
-    input_files << @fastq_files.grep(/_I1_/).first
-    input_files << @fastq_files.grep(/_I2_/).first
-    input_files << @fastq_files.grep(/_R1_/).first
-    input_files << @fastq_files.grep(/_R2_/).first
-
-    input_files
-  end
-
-  # Method that opens the input files for reading.
-  #
-  # input_files - Array with input file paths.
-  #
-  # Returns an Array with IO objects (file handles).
-  def open_input_files(input_files)
-    file_ios = []
-
-    input_files.each do |input_file|
-      file_ios << BioPieces::Fastq.open(input_file)
-    end
-
-    file_ios
-  end
-
-  # Method that opens the output files for writing.
-  #
-  # Returns a Hash with an incrementing index as keys, and a tuple of file
-  # handles as values.
-  def open_output_files
-    file_hash = {}
-    comp      = @options[:compress]
-
-    file_hash.merge!(open_output_files_samples(comp))
-    file_hash.merge!(open_output_files_undet(comp))
-
-    at_exit { file_hash.each_value { |value| value.map(&:close) } }
-
-    file_hash
-  end
-
-  # Method that opens the sample output files for writing.
-  #
-  # comp - Symbol with type of output compression.
-  #
-  # Returns a Hash with an incrementing index as keys, and a tuple of file
-  # handles as values.
-  def open_output_files_samples(comp)
-    file_hash = {}
-
-    @samples.each_with_index do |sample, i|
-      file_forward = File.join(@options[:output_dir], "#{sample.id}#{@suffix1}")
-      file_reverse = File.join(@options[:output_dir], "#{sample.id}#{@suffix2}")
-      io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
-      io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
-      file_hash[i] = [io_forward, io_reverse]
-    end
-
-    file_hash
-  end
-
-  # Method that opens the undertermined output files for writing.
-  #
-  # comp - Symbol with type of output compression.
-  #
-  # Returns a Hash with an incrementing index as keys, and a tuple of file
-  # handles as values.
-  def open_output_files_undet(comp)
-    file_hash     = {}
-    @undetermined = @samples.size + 1
-
-    file_forward = File.join(@options[:output_dir], "Undetermined#{@suffix1}")
-    file_reverse = File.join(@options[:output_dir], "Undetermined#{@suffix2}")
-    io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
-    io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
-    file_hash[@undetermined] = [io_forward, io_reverse]
-
-    file_hash
   end
 
   # Method to save stats to the log file 'Demultiplex.log' in the output
@@ -512,6 +366,8 @@ class SampleReader
     samples
   end
 
+  private
+
   # Method that reads sample information form a samples file, which consists
   # of ASCII text in three tab separated columns: The first column is the
   # sample_id, the second column is index1 and the third column is index2.
@@ -603,6 +459,18 @@ class SampleReader
     errors
   end
 
+  # Struct for holding sample information.
+  #
+  # id     - Sample id.
+  # index1 - Index1 sequence.
+  # index2 - Index2 sequence.
+  #
+  # Examples
+  #
+  #   Sample.new("test1", "atcg", "gcta")
+  #     # => <Sample>
+  #
+  # Returns Sample object.
   Sample = Struct.new(:id, :index1, :index2)
 end
 
@@ -680,6 +548,8 @@ class IndexBuilder
 
     index_hash
   end
+
+  private
 
   # Method to check if two index lists differ in size, if so an exception is
   # raised.
@@ -760,6 +630,178 @@ class IndexBuilder
     end
 
     new_words
+  end
+end
+
+# Class containing methods for reading and write FASTQ data files.
+class DataIO
+  def initialize(samples, fastq_files, compress, output_dir)
+    @samples      = samples
+    @compress     = compress
+    @output_dir   = output_dir
+    @suffix1      = extract_suffix(fastq_files.grep(/_R1_/).first)
+    @suffix2      = extract_suffix(fastq_files.grep(/_R2_/).first)
+    @input_files  = identify_input_files(fastq_files)
+    @undetermined = nil
+    @file_hash    = nil
+  end
+
+  # Method that extracts the Sample, Lane, Region information from a given file.
+  #
+  # file - String with file name.
+  #
+  # Examples
+  #
+  #   extract_suffix("Sample1_S1_L001_R1_001.fastq.gz")
+  #   # => "_S1_L001_R1_001"
+  #
+  # Returns String with SLR info.
+  def extract_suffix(file)
+    if file =~ /.+(_S\d_L\d{3}_R[12]_\d{3}).+$/
+      slr = Regexp.last_match(1)
+    else
+      fail "Unable to parse file SLR from: #{file}"
+    end
+
+    append_suffix(slr)
+  end
+
+  # Method that appends a file suffix to a given Sample, Lane, Region
+  # information String based on the @options[:compress] option. The
+  # file suffix can be either ".fastq.gz", ".fastq.bz2", or ".fastq".
+  #
+  # slr - String Sample, Lane, Region information.
+  #
+  # Examples
+  #
+  #   append_suffix("_S1_L001_R1_001")
+  #   # => "_S1_L001_R1_001.fastq.gz"
+  #
+  # Returns String with SLR info and file suffix.
+  def append_suffix(slr)
+    case @compress
+    when /gzip/
+      slr << '.fastq.gz'
+    when /bzip2/
+      slr << '.fastq.bz2'
+    else
+      slr << '.fastq'
+    end
+
+    slr
+  end
+
+  # Method identify the different input files from a given Array of FASTQ files.
+  # The forward index file contains a _I1_, the reverse index file contains a
+  # _I2_, the forward read file contains a _R1_ and finally, the reverse read
+  # file contain a _R2_.
+  #
+  # fastq_files - Array with FASTQ files (Strings).
+  #
+  # Returns an Array with input files (Strings).
+  def identify_input_files(fastq_files)
+    input_files = []
+
+    input_files << fastq_files.grep(/_I1_/).first
+    input_files << fastq_files.grep(/_I2_/).first
+    input_files << fastq_files.grep(/_R1_/).first
+    input_files << fastq_files.grep(/_R2_/).first
+
+    input_files
+  end
+
+  # Method that opens the @input_files for reading.
+  #
+  # input_files - Array with input file paths.
+  #
+  # Returns an Array with IO objects (file handles).
+  def open_input_files
+    @file_ios = []
+
+    @input_files.each do |input_file|
+      @file_ios << BioPieces::Fastq.open(input_file)
+    end
+
+    yield self
+  ensure
+    close_input_files
+  end
+
+  def close_input_files
+    @file_ios.map(&:close)
+  end
+
+  def each
+    loop do
+      entries = @file_ios.each_with_object([]) { |e, a| a << e.next_entry }
+
+      break if entries.compact.size != 4
+
+      yield entries
+    end
+  end
+
+  # Method that opens the output files for writing.
+  #
+  # Yeilds a Hash with an incrementing index as keys, and a tuple of file
+  # handles as values.
+  def open_output_files
+    @file_hash = {}
+    comp       = @compress
+
+    @file_hash.merge!(open_output_files_samples(comp))
+    @file_hash.merge!(open_output_files_undet(comp))
+
+    yield self
+  ensure
+    close_output_files
+  end
+
+  def close_output_files
+    @file_hash.each_value { |value| value.map(&:close) }
+  end
+
+  def [](key)
+    @file_hash[key]
+  end
+
+  # Method that opens the sample output files for writing.
+  #
+  # comp - Symbol with type of output compression.
+  #
+  # Returns a Hash with an incrementing index as keys, and a tuple of file
+  # handles as values.
+  def open_output_files_samples(comp)
+    file_hash = {}
+
+    @samples.each_with_index do |sample, i|
+      file_forward = File.join(@output_dir, "#{sample.id}#{@suffix1}")
+      file_reverse = File.join(@output_dir, "#{sample.id}#{@suffix2}")
+      io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
+      io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
+      file_hash[i] = [io_forward, io_reverse]
+    end
+
+    file_hash
+  end
+
+  # Method that opens the undertermined output files for writing.
+  #
+  # comp - Symbol with type of output compression.
+  #
+  # Returns a Hash with an incrementing index as keys, and a tuple of file
+  # handles as values.
+  def open_output_files_undet(comp)
+    file_hash     = {}
+    @undetermined = @samples.size + 1
+
+    file_forward = File.join(@output_dir, "Undetermined#{@suffix1}")
+    file_reverse = File.join(@output_dir, "Undetermined#{@suffix2}")
+    io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
+    io_reverse   = BioPieces::Fastq.open(file_reverse, 'w', compress: comp)
+    file_hash[@undetermined] = [io_forward, io_reverse]
+
+    file_hash
   end
 end
 
@@ -880,5 +922,3 @@ if fastq_files.size != 4
 end
 
 Demultiplexer.run(fastq_files, options)
-
-# DataReader
