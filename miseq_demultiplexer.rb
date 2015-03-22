@@ -47,7 +47,7 @@ USAGE = <<USAGE
   threshold or any single position in the index have a quality score below a
   given theshold.
 
-  Finally, a log file `Demultiplex.log` is output containing the stats of the
+  Finally, a log file `Demultiplex.log` is output containing the status of the
   demultiplexing process along with a list of the samples ids and unique index1
   and index2 sequences.
 
@@ -60,6 +60,8 @@ USAGE
 
 # Class containing methods for demultiplexing MiSeq sequences.
 class Demultiplexer
+  attr_reader :status
+
   # Public: Class method to run demultiplexing of MiSeq sequences.
   #
   # fastq_files - Array with paths to FASTQ files.
@@ -90,8 +92,12 @@ class Demultiplexer
   #
   # Returns Demultiplexer object
   def self.run(fastq_files, options)
-    new(fastq_files, options).demultiplex
-    save_log
+    log_file      = File.join(options[:output_dir], 'Demultiplex.log')
+    demultiplexer = new(fastq_files, options)
+    Screen.clear if options[:verbose]
+    demultiplexer.demultiplex
+    puts demultiplexer.status if options[:verbose]
+    demultiplexer.status.save(log_file)
   end
 
   # Constructor method for Demultiplexer object.
@@ -120,79 +126,102 @@ class Demultiplexer
   def initialize(fastq_files, options)
     @options      = options
     @samples      = SampleReader.read(options[:samples_file],
-                                    options[:revcomp_index1],
-                                    options[:revcomp_index2])
+                                      options[:revcomp_index1],
+                                      options[:revcomp_index2])
+    @undetermined = @samples.size + 1
     @index_hash   = IndexBuilder.build(@samples, options[:mismatches_max])
     @data_io      = DataIO.new(@samples, fastq_files, options[:compress],
-                             options[:output_dir])
-    @undetermined = @samples.size + 1
-    @stats        = stats_init
+                               options[:output_dir])
+    @status       = Status.new
   end
 
-  # Method to initialize a status Hash.
+  # Method to demultiplex reads according the index. This is done by
+  # simultaniously read-opening all input files (forward and reverse index
+  # files and forward and reverse read files) and read one entry from each.
+  # Such four entries we call a set of entries. If the quality scores from
+  # either index1 or index2 fails the criteria for mean and min required
+  # quality the set is skipped. In the combined indexes are found in the
+  # search index, then the reads are writting to files according to the sample
+  # information in the search index. If the combined indexes are not found,
+  # then the reads have their names appended with the index sequences and the
+  # reads are written to the Undertermined files.
   #
-  # Examples
-  #
-  #   stats_init
-  #   # => {:count=>0,
-  #         :match=>0,
-  #         :undetermined=>0,
-  #         :index1_bad_mean=>0,
-  #         :index2_bad_mean=>0,
-  #         :index1_bad_min=>0,
-  #         :index2_bad_min=>0}
-  #
-  # Returns a Hash.
-  def stats_init
-    {
-      count:           0,
-      match:           0,
-      undetermined:    0,
-      index1_bad_mean: 0,
-      index2_bad_mean: 0,
-      index1_bad_min:  0,
-      index2_bad_min:  0
-    }
-  end
-
+  # Returns nothing.
   def demultiplex
-    print "\e[H\e[2J" if @options[:verbose] # Console code to clear screen
-    time_start = Time.now
-
     @data_io.open_input_files do |ios_in|
       @data_io.open_output_files do |ios_out|
-        ios_in.each do |i1, i2, r1, r2|
-          next unless index_qual_ok?(i1, i2)
+        ios_in.each do |index1, index2, read1, read2|
+          next unless index_qual_ok?(index1, index2)
 
-          if (sample_id = @index_hash["#{i1.seq}#{i2.seq}".hash])
-            @stats[:match] += 2
-            io_forward, io_reverse = ios_out[sample_id]
-          else
-            r1.seq_name = "#{r1.seq_name} #{i1.seq}"
-            r2.seq_name = "#{r2.seq_name} #{i2.seq}"
+          match_index(ios_out, index1, index2, read1, read2)
 
-            io_forward, io_reverse = ios_out[@undetermined]
-            @stats[:undetermined] += 2
-          end
+          Screen.reset && puts(@status) if @options[:verbose] &&
+                                           (@status.count % 1_000) == 0
 
-          io_forward.puts r1.to_fastq
-          io_reverse.puts r2.to_fastq
-
-          @stats[:count] += 2
-
-          if @options[:verbose] && (@stats[:count] % 1_000) == 0
-            print_stats(Time.now - time_start)
-          end
-
-          # break if @stats[:count] == 100_000
+          # break if @status.count == 100_000
         end
       end
     end
-
-    pp @stats if @options[:verbose]
   end
 
   private
+
+  # Method that matches the combined index1 and index2 sequences against the
+  # search index. In case of a match the reads are written to file according to
+  # the information in the search index, otherwise the reads will have thier
+  # names appended with the index sequences and they will be written to the
+  # Undetermined files.
+  #
+  # ios_out - DataIO object with an accessor method for file output handles.
+  # index1  - Seq object with index1.
+  # index2  - Seq object with index2.
+  # read1   - Seq object with read1.
+  # read2   - Seq object with read2.
+  #
+  # Returns nothing.
+  def match_index(ios_out, index1, index2, read1, read2)
+    if (sample_id = @index_hash["#{index1.seq}#{index2.seq}".hash])
+      write_match(ios_out, sample_id, read1, read2)
+    else
+      write_undetermined(ios_out, index1, index2, read1, read2)
+    end
+  end
+
+  # Method that writes a index match to file according to the information in
+  # the search index.
+  #
+  # ios_out - DataIO object with an accessor method for file output handles.
+  # read1   - Seq object with read1.
+  # read2   - Seq object with read2.
+  #
+  # Returns nothing.
+  def write_match(ios_out, sample_id, read1, read2)
+    @status.match += 2
+    io_forward, io_reverse = ios_out[sample_id]
+
+    io_forward.puts read1.to_fastq
+    io_reverse.puts read2.to_fastq
+  end
+
+  # Method that appends the read names with the index sequences and writes
+  # the reads to the Undetermined files.
+  #
+  # ios_out - DataIO object with an accessor method for file output handles.
+  # index1  - Seq object with index1.
+  # index2  - Seq object with index2.
+  # read1   - Seq object with read1.
+  # read2   - Seq object with read2.
+  #
+  # Returns nothing.
+  def write_undetermined(ios_out, index1, index2, read1, read2)
+    @status.undetermined += 2
+    read1.seq_name = "#{read1.seq_name} #{index1.seq}"
+    read2.seq_name = "#{read2.seq_name} #{index2.seq}"
+
+    io_forward, io_reverse = ios_out[@undetermined]
+    io_forward.puts read1.to_fastq
+    io_reverse.puts read2.to_fastq
+  end
 
   # Method to check the quality scores of the given indexes.
   # If the mean score is higher than @options[:scores_mean] or
@@ -204,6 +233,7 @@ class Demultiplexer
   #
   # Returns true if quality OK, else false.
   def index_qual_ok?(index1, index2)
+    @status.count += 2
     index_qual_mean_ok?(index1, index2) &&
       index_qual_min_ok?(index1, index2)
   end
@@ -218,10 +248,10 @@ class Demultiplexer
   # Returns true if quality mean OK, else false.
   def index_qual_mean_ok?(index1, index2)
     if index1.scores_mean < @options[:scores_mean]
-      @stats[:index1_bad_mean] += 2
+      @status.index1_bad_mean += 2
       return false
     elsif index2.scores_mean < @options[:scores_mean]
-      @stats[:index2_bad_mean] += 2
+      @status.index2_bad_mean += 2
       return false
     end
 
@@ -238,45 +268,14 @@ class Demultiplexer
   # Returns true if quality min OK, else false.
   def index_qual_min_ok?(index1, index2)
     if index1.scores_min < @options[:scores_min]
-      @stats[:index1_bad_min] += 2
+      @status.index1_bad_min += 2
       return false
     elsif index2.scores_min < @options[:scores_min]
-      @stats[:index2_bad_min] += 2
+      @status.index2_bad_min += 2
       return false
     end
 
     true
-  end
-
-  # Method to clear the screen and print the current stats.
-  #
-  # time_elapsed - Time object with elapsed time.
-  #
-  # Returns nothing.
-  def print_stats(time_elapsed)
-    print "\e[1;1H"    # Console code to move cursor to 1,1 coordinate.
-
-    percent = (100 * @stats[:undetermined] / @stats[:count].to_f).round(1)
-    time = (Time.mktime(0) + time_elapsed).strftime('%H:%M:%S')
-    @stats[:undetermined_percent] = percent
-    @stats[:time] = time
-
-    pp @stats
-  end
-
-  # Method to save stats to the log file 'Demultiplex.log' in the output
-  # directory.
-  #
-  # Returns nothing.
-  def save_log
-    @stats[:sample_id] = @samples.map(&:id)
-
-    @stats[:index1] = uniq_index1
-    @stats[:index2] = uniq_index2
-
-    File.open(File.join(@options[:output_dir], 'Demultiplex.log'), 'w') do |ios|
-      PP.pp(@stats, ios)
-    end
   end
 
   # Method that iterates over @samples and compiles a sorted Array with all
@@ -284,7 +283,7 @@ class Demultiplexer
   #
   # Returns Array with uniq index1 sequences.
   def uniq_index1
-    @stats[:index1] = @samples.each_with_object(SortedSet.new) do |a, e|
+    @status.index1 = @samples.each_with_object(SortedSet.new) do |a, e|
       a << e.index1
     end.to_a
   end
@@ -294,7 +293,7 @@ class Demultiplexer
   #
   # Returns Array with uniq index2 sequences.
   def uniq_index2
-    @stats[:index2] = @samples.each_with_object(SortedSet.new) do |a, e|
+    @status.index2 = @samples.each_with_object(SortedSet.new) do |a, e|
       a << e.index2
     end.to_a
   end
@@ -729,10 +728,19 @@ class DataIO
     close_input_files
   end
 
+  # Method that closes open input files.
+  #
+  # Returns nothing.
   def close_input_files
     @file_ios.map(&:close)
   end
 
+  # Method that reads a Seq entry from each of the file handles in the
+  # @file_ios Array. Iteration stops when no more Seq entries are found.
+  #
+  # Yields an Array with 4 Seq objects.
+  #
+  # Returns nothing
   def each
     loop do
       entries = @file_ios.each_with_object([]) { |e, a| a << e.next_entry }
@@ -763,6 +771,12 @@ class DataIO
     @file_hash.each_value { |value| value.map(&:close) }
   end
 
+  # Getter method that returns a tuple of file handles from @file_hash when
+  # given a key.
+  #
+  # key - Key used to lookup
+  #
+  # Returns Array with a tuple of IO objects.
   def [](key)
     @file_hash[key]
   end
@@ -802,6 +816,102 @@ class DataIO
     file_hash[@undetermined] = [io_forward, io_reverse]
 
     file_hash
+  end
+end
+
+# Class containing methods to records demultiplexing status.
+class Status
+  attr_accessor :count, :match, :undetermined, :index1_bad_mean,
+                :index2_bad_mean, :index1_bad_min, :index2_bad_min
+  # Method to initialize a Status object, which contains the following instance
+  # variables initialized to 0:
+  #
+  #   @count           - Number or reads.
+  #   @match           - Number of reads found in index.
+  #   @undetermined    - Number of reads not found in index.
+  #   @index1_bad_mean - Number of reads dropped due to bad mean in index1.
+  #   @index2_bad_mean - Number of reads dropped due to bad mean in index2.
+  #   @index1_bad_min  - Number of reads dropped due to bad min in index1.
+  #   @index2_bad_min  - Number of reads dropped due to bad min in index2.
+  #
+  # Examples
+  #
+  #   Status.new
+  #   # => <Status>
+  #
+  # Returns a Status object.
+  def initialize
+    @count           = 0
+    @match           = 0
+    @undetermined    = 0
+    @index1_bad_mean = 0
+    @index2_bad_mean = 0
+    @index1_bad_min  = 0
+    @index2_bad_min  = 0
+    @time_start      = Time.now
+  end
+
+  # Method to format a String from a Status object. This is done by adding the
+  # relevant instance variables to a Hash and return this as an YAML String.
+  #
+  # Returns a YAML String.
+  def to_s
+    { count:                @count,
+      match:                @match,
+      undetermined:         @undetermined,
+      undetermined_percent: undetermined_percent,
+      index1_bad_mean:      @index1_bad_mean,
+      index2_bad_mean:      @index2_bad_mean,
+      index1_bad_min:       @index1_bad_min,
+      index2_bad_min:       @index2_bad_min,
+      time:                 time }.to_yaml
+  end
+
+  # Method that calculate the percentage of undetermined reads.
+  #
+  # Returns a Float with the percentage of undetermined reads.
+  def undetermined_percent
+    (100 * @status[:undetermined] / @status[:count].to_f).round(1)
+  end
+
+  # Method that calculates the elapsed time and formats a nice Time String.
+  #
+  # Returns String with elapsed time.
+  def time
+    time_elapsed = Time.now - @time_start
+    (Time.mktime(0) + time_elapsed).strftime('%H:%M:%S')
+  end
+
+  # Method to save stats to the log file 'Demultiplex.log' in the output
+  # directory.
+  #
+  # Returns nothing.
+  def save(file)
+    @stats[:sample_id] = @samples.map(&:id)
+
+    @stats[:index1] = uniq_index1
+    @stats[:index2] = uniq_index2
+
+    File.open(file, 'w') do |ios|
+      ios.puts @status
+    end
+  end
+end
+
+# Module containing class methods for clearing and resetting a terminal screen.
+module Screen
+  # Method that uses console code to clear the screen.
+  #
+  # Returns nothing.
+  def self.clear
+    print "\e[H\e[2J"
+  end
+
+  # Method that uses console code to move cursor to 1,1 coordinate.
+  #
+  # Returns nothing.
+  def self.reset
+    print "\e[1;1H"
   end
 end
 
