@@ -142,7 +142,7 @@ end
 temp_file = Tempfile.new('test.fna')
 
 File.open(temp_file, 'w') do |ios|
-  1_000_000.times do |i|
+  3_000_000.times do |i|
     ios << ">ILLUMINA-#{i}E_0004:2:1:1040:5263#TTAGGC/1\nTTCGGCATCGGCGGCGACGTTGGCGGCGGGGCCGGGCGGGTCGANNNCAT\n"
   end
 end
@@ -151,7 +151,7 @@ end
 
 $stderr.puts "starting"
 
-CPUS       = 2
+CPUS       = 20
 CHUNK_SIZE = 1024 * 20_000   # 20 Mb chunks
 
 each_parallel = Proc.new do

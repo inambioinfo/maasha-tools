@@ -56,7 +56,6 @@ $stderr.puts "Prefex: #{prefix}   Suffix: #{suffix}"
 puts "# ID Name-match"
 
 files.each do |file|
-  $stderr.puts file
   sample  = file[prefix.size     ... -1 * suffix.size]
   pattern = file[prefix.size - 1 ..  -1 * suffix.size]
 

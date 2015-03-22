@@ -151,12 +151,13 @@ class Demultiplexer
     @data_io.open_input_files do |ios_in|
       @data_io.open_output_files do |ios_out|
         ios_in.each do |index1, index2, read1, read2|
+          @status.count += 2
+          puts(@status) if @options[:verbose] &&
+                                           (@status.count % 1_000) == 0
+
           next unless index_qual_ok?(index1, index2)
 
           match_index(ios_out, index1, index2, read1, read2)
-
-          Screen.reset && puts(@status) if @options[:verbose] &&
-                                           (@status.count % 1_000) == 0
 
           # break if @status.count == 100_000
         end
@@ -233,7 +234,6 @@ class Demultiplexer
   #
   # Returns true if quality OK, else false.
   def index_qual_ok?(index1, index2)
-    @status.count += 2
     index_qual_mean_ok?(index1, index2) &&
       index_qual_min_ok?(index1, index2)
   end
@@ -871,7 +871,7 @@ class Status
   #
   # Returns a Float with the percentage of undetermined reads.
   def undetermined_percent
-    (100 * @status[:undetermined] / @status[:count].to_f).round(1)
+    (100 * @undetermined / @count.to_f).round(1)
   end
 
   # Method that calculates the elapsed time and formats a nice Time String.
