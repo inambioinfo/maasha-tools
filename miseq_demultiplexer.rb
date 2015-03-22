@@ -118,14 +118,15 @@ class Demultiplexer
   #
   # Returns Demultiplexer object
   def initialize(fastq_files, options)
-    @options    = options
-    @samples    = SampleReader.read(options[:samples_file],
+    @options      = options
+    @samples      = SampleReader.read(options[:samples_file],
                                     options[:revcomp_index1],
                                     options[:revcomp_index2])
-    @index_hash = IndexBuilder.build(@samples, options[:mismatches_max])
-    @data_io    = DataIO.new(@samples, fastq_files, options[:compress],
+    @index_hash   = IndexBuilder.build(@samples, options[:mismatches_max])
+    @data_io      = DataIO.new(@samples, fastq_files, options[:compress],
                              options[:output_dir])
-    @stats      = stats_init
+    @undetermined = @samples.size + 1
+    @stats        = stats_init
   end
 
   # Method to initialize a status Hash.
@@ -169,6 +170,7 @@ class Demultiplexer
           else
             r1.seq_name = "#{r1.seq_name} #{i1.seq}"
             r2.seq_name = "#{r2.seq_name} #{i2.seq}"
+
             io_forward, io_reverse = ios_out[@undetermined]
             @stats[:undetermined] += 2
           end
@@ -642,7 +644,7 @@ class DataIO
     @suffix1      = extract_suffix(fastq_files.grep(/_R1_/).first)
     @suffix2      = extract_suffix(fastq_files.grep(/_R2_/).first)
     @input_files  = identify_input_files(fastq_files)
-    @undetermined = nil
+    @undetermined = @samples.size + 1
     @file_hash    = nil
   end
 
@@ -792,9 +794,7 @@ class DataIO
   # Returns a Hash with an incrementing index as keys, and a tuple of file
   # handles as values.
   def open_output_files_undet(comp)
-    file_hash     = {}
-    @undetermined = @samples.size + 1
-
+    file_hash    = {}
     file_forward = File.join(@output_dir, "Undetermined#{@suffix1}")
     file_reverse = File.join(@output_dir, "Undetermined#{@suffix2}")
     io_forward   = BioPieces::Fastq.open(file_forward, 'w', compress: comp)
