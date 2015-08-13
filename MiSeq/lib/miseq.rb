@@ -2,8 +2,7 @@
 
 # Namespace for MiSeq classes.
 module MiSeq
-  # Error class for RunStatistics errors.
-  RunStatisticsError = Class.new(StandardError)
+  require 'english'
 
   # Error class for SampleSheet errors.
   SampleSheetError = Class.new(StandardError)
@@ -49,6 +48,8 @@ module MiSeq
     #
     # @return [Array] List of Samplesheet lines.
     def parse_run_statistics
+      return [] unless File.exist? @file
+
       File.read(@file).split($INPUT_RECORD_SEPARATOR)
     end
   end
