@@ -77,10 +77,32 @@ class TestMiSeq < Test::Unit::TestCase
     assert_equal('Big_Bang', ss.experiment_name)
   end
 
-  # test 'DataDir#' do
-  #   assert_equal(1, 2)
-  # end
-  #
+  test 'DataDir#date with bad format fails' do
+    dd = MiSeq::DataDir.new('/MiSeq/2013-04-50')
+    assert_raise(MiSeq::DataDirError) { dd.date }
+  end
+
+  test 'DataDir#date returns OK' do
+    dd = MiSeq::DataDir.new('/MiSeq/131223_')
+    assert_equal('2013-12-23', dd.date)
+  end
+
+  test 'DataDir#rename with existing dir fails' do
+    dd       = MiSeq::DataDir.new('/MiSeq/131223_')
+    new_name = File.join(@dir, 'new')
+    Dir.mkdir(new_name)
+    assert_raise(MiSeq::DataDirError) { dd.rename(new_name) }
+  end
+
+  test 'DataDir#rename works OK' do
+    old_name = File.join(@dir, '131223_')
+    new_name = File.join(@dir, 'new')
+    dd       = MiSeq::DataDir.new(old_name)
+    Dir.mkdir(old_name)
+    dd.rename(new_name)
+    assert_true(File.directory? dd.dir)
+  end
+
   # test 'Data#' do
   #   assert_equal(1, 2)
   # end
