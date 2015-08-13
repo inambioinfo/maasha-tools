@@ -1,9 +1,9 @@
-#!/usr/bin/env ruby
 $LOAD_PATH.unshift File.join(File.dirname(__FILE__), '..')
 
 require 'test/helper'
 
-
-test "CSV.read_array returns correctly" do
-  assert_equal(expected, result)
+class TestCSV < Test::Unit::TestCase
+  test 'my favorite test' do
+    assert_equal(1, 2)
+  end
 end
