@@ -121,6 +121,8 @@ module MiSeq
 
   # Class for manipulating a MiSeq data directory.
   class DataDir
+    attr_reader :dir
+
     # Constructor for DataDir class.
     #
     # @param dir [String] Path to MiSeq data dir.
@@ -137,13 +139,13 @@ module MiSeq
     #
     # @return [String] ISO 8601 date.
     def date
-      fields = File.basename(@dir).split('_')
+      date = File.basename(@dir)[0...6]
 
-      fail DataDirError, 'Date field not found' if fields.empty?
+      fail DataDirError, "Bad date format: #{date}" unless date =~ /^\d{6}$/
 
-      year  = fields.first[0..1].to_i + 2000
-      month = fields.first[2..3]
-      day   = fields.first[4..5]
+      year  = date[0..1].to_i + 2000
+      month = date[2..3]
+      day   = date[4..5]
 
       "#{year}-#{month}-#{day}"
     end
@@ -219,7 +221,7 @@ module MiSeq
       @new_names.each do |dir|
         fail "Tar file exist: #{dir}.tar" if File.exist? "#{dir}.tar"
 
-        cmd = "tar -cf #{dir}.tar #{dir}"
+        cmd = "tar -cf #{dir}.tar #{dir} > /dev/null 2>&1"
 
         system(cmd)
 
