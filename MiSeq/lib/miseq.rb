@@ -82,7 +82,7 @@ module MiSeq
 
       fail SampleSheetError, 'No Investigator Name field' if fields.size != 2
 
-      fields[1].gsub(' ', '_')
+      fields[1].strip.gsub(' ', '_')
     end
 
     # Extract the Experiment Name from the SampleSheet lines.
@@ -97,11 +97,13 @@ module MiSeq
 
       match_lines = lines.select { |line| line =~ /^Experiment Name/ }
 
+      fail SampleSheetError, 'No Experiment Name line' if match_lines.empty?
+
       fields = match_lines.first.split(',')
 
-      fail SampleSheetError, 'No Experiment Name in file' if fields.size !=2
+      fail SampleSheetError, 'No Experiment Name in file' if fields.size != 2
 
-      fields[1].gsub(' ', '_')
+      fields[1].strip.gsub(' ', '_')
     end
 
     private
