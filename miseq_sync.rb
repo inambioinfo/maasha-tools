@@ -17,6 +17,15 @@ module MiSeq
   # Class for parsing the GenerateFASTQRunStatistics.xml file to determine if a
   # MiSeq run has completed.
   class RunStatistics
+    # Returns true if the MiSeq run has completed.
+    #
+    # @param file [String] Path to run statistics file.
+    #
+    # @return [Boolean]
+    def self.complete?(file)
+      new(file).complete?
+    end
+
     # Constructor for RunStatistics.
     #
     # @oaram file [String] Path to file.
@@ -28,6 +37,8 @@ module MiSeq
 
     # Locates the CompletionTime tag in GenerateFASTQRunStatistics.xml and
     # returns true if found else false.
+    #
+    # @return [Boolean]
     def complete?
       parse_run_statistics.select { |line| line =~ /CompletionTime/ }.any?
     end
@@ -178,16 +189,15 @@ module MiSeq
 
     # Rename all MiSeq data dirs based on sane date format and information from
     # SampleSheets.
-    #
-    # @raise [RuntimeError] on missing SampleSheet.
     def rename
       dirs.each do |dir|
-        file = File.join(dir, 'SampleSheet.csv')
+        file_stats   = File.join(dir, 'GenerateFASTQRunStatistics.xml')
+        file_samples = File.join(dir, 'SampleSheet.csv')
 
-        fail "No SampleSheet located in dir: #{dir}" unless File.exist? file
+        next unless MiSeq::RunStatistics.complete?(file_stats)
 
         dd = MiSeq::DataDir.new(dir)
-        ss = MiSeq::SampleSheet.new(file)
+        ss = MiSeq::SampleSheet.new(file_samples)
 
         new_name = compile_new_name(dir, dd.date, ss.investigator_name,
                                     ss.experiment_name)
