@@ -79,20 +79,19 @@ module MiSeq
     # Extract the Investigator Name from the SampleSheet lines.
     # Any whitespace in the Investigator Name is replaced by underscores.
     #
-    # @raise [RuntimeError] On failing Experiment Name line.
-    # @raise [RuntimeError] On failing Experiment Name field.
+    # @raise [SampleSheetError] On failing Experiment Name line.
+    # @raise [SampleSheetError] On failing Experiment Name field.
     #
     # @return [String] Investigator name.
     def investigator_name
-      lines = parse_samplesheet
+      lines       = parse_samplesheet
+      match_lines = lines.select { |line| line =~ /^Investigator Name/ }
 
-      matching_lines = lines.select { |line| line =~ /^Investigator Name/ }
+      fail SampleSheetError, 'No Investigator Name line' if match_lines.empty?
 
-      fail 'No Investigator Name in file' if matching_lines.empty?
+      fields = match_lines.first.split(',')
 
-      fields = matching_lines.first.split(',')
-
-      fail 'No Investigator Name in file' if fields.empty?
+      fail SampleSheetError, 'No Investigator Name field' if fields.empty?
 
       fields[1].gsub(' ', '_')
     end
@@ -100,20 +99,18 @@ module MiSeq
     # Extract the Experiment Name from the SampleSheet lines.
     # Any whitespace in the Experiment Name is replaced by underscores.
     #
-    # @raise [RuntimeError] On failing Experiment Name line.
-    # @raise [RuntimeError] On failing Experiment Name field.
+    # @raise [SampleSheetError] On failing Experiment Name line.
+    # @raise [SampleSheetError] On failing Experiment Name field.
     #
     # @return [String] Experiment name.
     def experiment_name
       lines = parse_samplesheet
 
-      matching_lines = lines.select { |line| line =~ /^Experiment Name/ }
+      match_lines = lines.select { |line| line =~ /^Experiment Name/ }
 
-      fail 'No Experiment Name in file' if matching_lines.empty?
+      fields = match_lines.first.split(',')
 
-      fields = matching_lines.first.split(',')
-
-      fail 'No Experiment Name in file' if fields.empty?
+      fail SampleSheetError, 'No Experiment Name in file' if fields.empty?
 
       fields[1].gsub(' ', '_')
     end
@@ -142,13 +139,13 @@ module MiSeq
     # Extract data from a given dir path and return this in ISO 8601 format
     # (YYYY-MM-DD).
     #
-    # @raise [RuntimeError] On failed extraction.
+    # @raise [DataDirError] On failed extraction.
     #
     # @return [String] ISO 8601 date.
     def date
       fields = File.basename(@dir).split('_')
 
-      fail 'Date field not found' if fields.empty?
+      fail DataDirError, 'Date field not found' if fields.empty?
 
       year  = fields.first[0..1].to_i + 2000
       month = fields.first[2..3]
@@ -161,9 +158,9 @@ module MiSeq
     #
     # @param new_name [String] New directory name.
     #
-    # @raise [RuntimeError] If directory already exist.
+    # @raise [DataDirError] If directory already exist.
     def rename(new_name)
-      fail "Dir already exits: #{new_name}" if File.directory? new_name
+      fail DataDirError, "Dir exits: #{new_name}" if File.directory? new_name
 
       File.rename(@dir, new_name)
 
@@ -222,8 +219,8 @@ module MiSeq
 
     # Back all reanamed dirs with tar.
     #
-    # @raise [RuntimeError] if tar file exist.
-    # @raise [RuntimeError] if tar fails.
+    # @raise [DataError] if tar file exist.
+    # @raise [DataError] if tar fails.
     def tar
       @new_names.each do |dir|
         fail "Tar file exist: #{dir}.tar" if File.exist? "#{dir}.tar"
@@ -232,7 +229,7 @@ module MiSeq
 
         system(cmd)
 
-        fail "Command failed: #{cmd}" unless $CHILD_STATUS.success?
+        fail DataError, "Command failed: #{cmd}" unless $CHILD_STATUS.success?
       end
     end
 
