@@ -29,10 +29,54 @@ class TestMiSeq < Test::Unit::TestCase
     assert_true(MiSeq::RunStatistics.complete?(@file_stats))
   end
 
-  # test 'SampleSheet#' do
-  #   assert_equal(1, 2)
-  # end
-  #
+  test 'SampleSheet#investigator_name without SampleSheet.csv fails' do
+    ss = MiSeq::SampleSheet.new('')
+    assert_raise(MiSeq::SampleSheetError) { ss.investigator_name }
+  end
+
+  test 'SampleSheet#investigator_name without Investigator line fails' do
+    File.open(@file_samples, 'w') { |ios| ios.write('') }
+    ss = MiSeq::SampleSheet.new(@file_samples)
+    assert_raise(MiSeq::SampleSheetError) { ss.investigator_name }
+  end
+
+  test 'SampleSheet#investigator_name without Investigator field fails' do
+    File.open(@file_samples, 'w') { |ios| ios.write('Investigator Name') }
+    ss = MiSeq::SampleSheet.new(@file_samples)
+    assert_raise(MiSeq::SampleSheetError) { ss.investigator_name }
+  end
+
+  test 'SampleSheet#investigator_name with Investigator name returns OK' do
+    line = 'Investigator Name, Martin Hansen'
+    File.open(@file_samples, 'w') { |ios| ios.write(line) }
+    ss = MiSeq::SampleSheet.new(@file_samples)
+    assert_equal('Martin_Hansen', ss.investigator_name)
+  end
+
+  test 'SampleSheet#experiment_name without SampleSheet.csv fails' do
+    ss = MiSeq::SampleSheet.new('')
+    assert_raise(MiSeq::SampleSheetError) { ss.experiment_name }
+  end
+
+  test 'SampleSheet#experiment_name without Experiment line fails' do
+    File.open(@file_samples, 'w') { |ios| ios.write('') }
+    ss = MiSeq::SampleSheet.new(@file_samples)
+    assert_raise(MiSeq::SampleSheetError) { ss.experiment_name }
+  end
+
+  test 'SampleSheet#experiment_name without Experiment field fails' do
+    File.open(@file_samples, 'w') { |ios| ios.write('Experiment Name') }
+    ss = MiSeq::SampleSheet.new(@file_samples)
+    assert_raise(MiSeq::SampleSheetError) { ss.experiment_name }
+  end
+
+  test 'SampleSheet#experiment_name with Experiment name returns OK' do
+    line = 'Experiment Name, Big Bang'
+    File.open(@file_samples, 'w') { |ios| ios.write(line) }
+    ss = MiSeq::SampleSheet.new(@file_samples)
+    assert_equal('Big_Bang', ss.experiment_name)
+  end
+
   # test 'DataDir#' do
   #   assert_equal(1, 2)
   # end
