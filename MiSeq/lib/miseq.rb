@@ -99,7 +99,7 @@ module MiSeq
 
       fields = match_lines.first.split(',')
 
-      fail SampleSheetError, 'No Experiment Name in file' if fields.empty?
+      fail SampleSheetError, 'No Experiment Name in file' if fields.size !=2
 
       fields[1].gsub(' ', '_')
     end
