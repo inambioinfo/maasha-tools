@@ -14,6 +14,18 @@ DST = '/Users/maasha/scratch/miseq_data_remote/'
 
 # Namespace for MiSeq classes.
 module MiSeq
+  # Error class for RunStatistics errors.
+  RunStatisticsError = Class.new(StandardError)
+
+  # Error class for SampleSheet errors.
+  SampleSheetError = Class.new(StandardError)
+
+  # Error class for DataDir errors.
+  DataDirError = Class.new(StandardError)
+
+  # Error class for Data errors.
+  DataError = Class.new(StandardError)
+
   # Class for parsing the GenerateFASTQRunStatistics.xml file to determine if a
   # MiSeq run has completed.
   class RunStatistics
