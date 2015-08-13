@@ -80,7 +80,7 @@ module MiSeq
 
       fields = match_lines.first.split(',')
 
-      fail SampleSheetError, 'No Investigator Name field' if fields.empty?
+      fail SampleSheetError, 'No Investigator Name field' if fields.size != 2
 
       fields[1].gsub(' ', '_')
     end
