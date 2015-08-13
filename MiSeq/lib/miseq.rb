@@ -108,8 +108,11 @@ module MiSeq
 
     # Parse Samplesheet file and return a list of lines.
     #
+    # @raise [SampleSheetError] unless SampleSheet.csv file exist.
+    #
     # @return [Array] List of Samplesheet lines.
     def parse_samplesheet
+      fail SampleSheetError, "No such file: #{@file}" unless File.exist? @file
       File.read(@file).split($INPUT_RECORD_SEPARATOR)
     end
   end
