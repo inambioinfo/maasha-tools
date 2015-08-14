@@ -2,7 +2,8 @@
 
 # Namespace for MiSeq classes.
 module MiSeq
-  require 'english'
+  require 'English'
+  require 'pp'
 
   # Error class for SampleSheet errors.
   SampleSheetError = Class.new(StandardError)
@@ -115,7 +116,13 @@ module MiSeq
     # @return [Array] List of Samplesheet lines.
     def parse_samplesheet
       fail SampleSheetError, "No such file: #{@file}" unless File.exist? @file
-      File.read(@file).split($INPUT_RECORD_SEPARATOR)
+      lines = []
+      
+      File.open(@file) do |ios|
+      	ios.each_line { |line| lines << line.chomp }
+      end
+      
+      lines
     end
   end
 
