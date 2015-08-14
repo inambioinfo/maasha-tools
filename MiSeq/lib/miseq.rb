@@ -116,12 +116,13 @@ module MiSeq
     # @return [Array] List of Samplesheet lines.
     def parse_samplesheet
       fail SampleSheetError, "No such file: #{@file}" unless File.exist? @file
+
       lines = []
-      
+
       File.open(@file) do |ios|
-      	ios.each_line { |line| lines << line.chomp }
+        ios.each_line { |line| lines << line.chomp }
       end
-      
+
       lines
     end
   end
@@ -276,6 +277,25 @@ module MiSeq
       new_name = [date, investigor_name, experiment_name].join('_')
 
       File.join(path, new_name)
+    end
+  end
+
+  # Class for logging messages.
+  class Log
+    # Constructor for Log class.
+    #
+    # @param file [String] Path to log file.
+    def initialize(file)
+      @file = file
+    end
+
+    # Write message to log file.
+    #
+    # @param msg [String] Message to write.
+    def log(msg)
+      File.open(@file, 'a') do |ios|
+        ios.puts msg
+      end
     end
   end
 end

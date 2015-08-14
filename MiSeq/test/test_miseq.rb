@@ -12,6 +12,7 @@ class TestMiSeq < Test::Unit::TestCase
     @dir_dst      = Dir.mktmpdir('miseq_dst')
     @file_stats   = File.join(@dir_src, 'GenerateFASTQRunStatistics.xml')
     @file_samples = File.join(@dir_src, 'Samplesheet.csv')
+    @file_log     = File.join(@dir_src, 'log.txt')
 
     setup_dir_src_ok
     setup_dir_src_unfinished
@@ -185,5 +186,35 @@ class TestMiSeq < Test::Unit::TestCase
     assert_true(File.exist? File.join(@dir_dst, file1))
     assert_true(File.exist? File.join(@dir_dst, file2))
     assert_false(File.exist? File.join(@dir_dst, file3))
+  end
+
+  test 'Log#log new log file works OK' do
+    logger = MiSeq::Log.new(@file_log)
+    logger.log('my message')
+
+    lines = []
+
+    File.open(@file_log) do |ios|
+      ios.each_line { |line| lines << line.chomp }
+    end
+
+    assert_equal(1, lines.size)
+    assert_equal('my message', lines.first.split("\t").last)
+  end
+
+  test 'Log#log appends works OK' do
+    logger = MiSeq::Log.new(@file_log)
+    logger.log('1 message')
+    logger.log('2 message')
+
+    lines = []
+
+    File.open(@file_log) do |ios|
+      ios.each_line { |line| lines << line.chomp }
+    end
+
+    assert_equal(2, lines.size)
+    assert_equal('1 message', lines.first.split("\t").last)
+    assert_equal('2 message', lines.last.split("\t").last)
   end
 end
