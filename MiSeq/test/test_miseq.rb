@@ -188,6 +188,12 @@ class TestMiSeq < Test::Unit::TestCase
     assert_false(File.exist? File.join(@dir_dst, file3))
   end
 
+  test 'Data#sync log works OK' do
+    MiSeq::Data.sync(@dir_src_unfinished, @dir_dst)
+
+    puts File.read(File.join(@dir_src_unfinished, 'miseq_sync.log'))
+  end
+
   test 'Log#log new log file works OK' do
     logger = MiSeq::Log.new(@file_log)
     logger.log('my message')

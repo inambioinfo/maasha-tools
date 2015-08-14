@@ -184,7 +184,7 @@ module MiSeq
       data = new(src, dst)
       data.rename
       data.tar
-      # data.remove
+      # data.remove # TODO: untested
       data.sync
     end
 
@@ -197,6 +197,7 @@ module MiSeq
     def initialize(src, dst)
       @src       = src
       @dst       = dst
+      @logger    = MiSeq::Log.new(File.join(@src, 'miseq_sync.log'))
       @new_names = []
     end
 
@@ -217,6 +218,9 @@ module MiSeq
 
         dd.rename(new_name)
 
+        @logger.log("Renamed #{File.basename(dir)} to " \
+                    "#{File.basename(new_name)}")
+
         @new_names << new_name
       end
     end
@@ -231,9 +235,13 @@ module MiSeq
 
         cmd = "tar -cf #{dir}.tar #{dir} > /dev/null 2>&1"
 
+        @logger.log("Tar of #{File.basename(dir)} start")
+
         system(cmd)
 
         fail DataError, "Command failed: #{cmd}" unless $CHILD_STATUS.success?
+
+        @logger.log("Tar of #{File.basename(dir)} done")
       end
     end
 
@@ -243,15 +251,18 @@ module MiSeq
     #     # FileUtils.rm_rf dir
     #   end
     # end
-
     def sync
       log = "#{@src}/rsync.log"
       src = "#{@src}/*.tar"
       cmd = "rsync -Haq #{src} #{@dst} --log-file #{log} --exclude=delete_me"
 
+      @logger.log('Rsync start')
+
       system(cmd)
 
       fail "Command failed: #{cmd}" unless $CHILD_STATUS.success?
+
+      @logger.log('Rsync done')
     end
 
     private
@@ -289,12 +300,12 @@ module MiSeq
       @file = file
     end
 
-    # Write message to log file.
+    # Write time stamp and message to log file.
     #
     # @param msg [String] Message to write.
     def log(msg)
       File.open(@file, 'a') do |ios|
-        ios.puts msg
+        ios.puts [Time.now, msg].join("\t")
       end
     end
   end
