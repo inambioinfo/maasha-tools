@@ -163,6 +163,15 @@ class TestMiSeq < Test::Unit::TestCase
     assert_true(File.exist? File.join(@dir_dst, file3))
   end
 
+  test 'Data#sync dst permissions are OK' do
+    MiSeq::Data.sync(@dir_src_ok, @dir_dst)
+
+    file = '2013-04-00_Martin_Hansen_0_Big_Bang_0.tar'
+    dst  = File.join(@dir_dst, file)
+
+    assert_equal('-rw-------', `ls -l #{dst}`[0..9])
+  end
+
   test 'Data#sync with existing dirs works OK' do
     MiSeq::Data.sync(@dir_src_ok, @dir_dst)
     MiSeq::Data.sync(@dir_src_ok, @dir_dst)

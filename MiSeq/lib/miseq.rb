@@ -254,7 +254,7 @@ module MiSeq
     def sync
       log = "#{@src}/rsync.log"
       src = "#{@src}/*.tar"
-      cmd = "rsync -Haq #{src} #{@dst} --log-file #{log} --exclude=delete_me"
+      cmd = "rsync -Haq #{src} #{@dst} --log-file #{log} --chmod=Fu=rw,og="
 
       @logger.log('Rsync start')
 
